@@ -129,6 +129,10 @@ local defaults = {
 				twoopt_passes      = 3,     -- Number of times to perform 2-opt passes
 				two_point_five_opt = false, -- Perform optimized 2-opt pass
 			},
+			cetsp = {
+				maxPasses = 10,
+				maxVNS = 20,
+			},
 			prof_options = {
 				['*'] = "Always",
 			},
@@ -137,6 +141,8 @@ local defaults = {
 			line_gaps = true,
 			line_gaps_skip_cluster = true,
 			cluster_dist = 60,
+			cetsp_radius = 32,
+			draw_cluster_lines = false,
 			callbacks = {
 				['*'] = true
 			}
@@ -398,6 +404,265 @@ local XY_cache_mt = {
 setmetatable( X_cache, XY_cache_mt )
 setmetatable( Y_cache, XY_cache_mt )
 
+function Routes:ClampLine(last_x, last_y, cur_x, cur_y, cx, cy, radius)
+    local last_inside = is_inside(last_x, last_y, cx, cy, radius)
+    local cur_inside  = is_inside(cur_x, cur_y, cx, cy, radius)
+    local div_by_zero_nudge = 0.000001
+    local radius2 = radius * radius
+
+    local draw_sx, draw_sy, draw_ex, draw_ey
+
+    -- both inside – trivial case
+    if cur_inside and last_inside then
+        return last_x, last_y, cur_x, cur_y
+    end
+
+    -- direction of the line
+    local dx = last_x - cur_x
+    local dy = last_y - cur_y
+
+    -- perpendicular point
+    local zx = cx - dy
+    local zy = cy + dx
+
+    if dx == 0 then dx = div_by_zero_nudge end
+    if dy == 0 then dy = div_by_zero_nudge end
+
+    local nd = ((cx - last_x) * (cy - zy) - (cx - zx) * (cy - last_y)) /
+               ((cur_x - last_x) * (cy - zy) - (cx - zx) * (cur_y - last_y))
+
+    local px = last_x + nd * -dx
+    local py = last_y + nd * -dy
+
+    local dpc_x = cx - px
+    local dpc_y = cy - py
+    local lenpc = dpc_x * dpc_x + dpc_y * dpc_y
+
+    if lenpc >= 2 * radius2 then
+        return nil
+    end
+
+    -- --- Clamp the end point ---
+    if cur_inside then
+        draw_ex = cur_x
+        draw_ey = cur_y
+    else
+        if math_abs(cur_x - cx) < radius and math_abs(cur_y - cy) < radius then
+            draw_ex = cur_x
+            draw_ey = cur_y
+        else
+            local minimap_cur_x = cx + radius * (dx < 0 and 1 or -1)
+            local minimap_cur_y = cy + radius * (dy < 0 and 1 or -1)
+
+            local delta_cur_x = (minimap_cur_x - cur_x) / -dx
+            local delta_cur_y = (minimap_cur_y - cur_y) / -dy
+
+            if delta_cur_x < delta_cur_y and delta_cur_x < 0 then
+                draw_ex = minimap_cur_x
+                draw_ey = cur_y + -dy * delta_cur_x
+            else
+                draw_ex = cur_x + -dx * delta_cur_y
+                draw_ey = minimap_cur_y
+            end
+
+            if math_abs(draw_ex - cx) > radius * 1.01 or
+               math_abs(draw_ey - cy) > radius * 1.01 then
+                draw_ex, draw_ey = nil, nil
+            end
+        end
+
+        if draw_ex and draw_ey and is_round(draw_ex - cx, draw_ey - cy) then
+            if lenpc < radius2 then
+                local dcx = cx - cur_x
+                local dcy = cy - cur_y
+                local len_dc = dcx * dcx + dcy * dcy
+                local len_d = dx * dx + dy * dy
+                local len_ddc = dx * dcx + dy * dcy
+                local d_sqrt = (len_ddc * len_ddc - len_d * (len_dc - radius2)) ^ 0.5
+
+                draw_ex = cur_x - dx * (-len_ddc + d_sqrt) / len_d
+                draw_ey = cur_y - dy * (-len_ddc + d_sqrt) / len_d
+
+                if (draw_ex - px) / math_abs(draw_ex - px) ~= (cur_x - px) / math_abs(cur_x - px) or
+                   (draw_ey - py) / math_abs(draw_ey - py) ~= (cur_y - py) / math_abs(cur_y - py) then
+                    draw_ex, draw_ey = nil, nil
+                end
+            else
+                draw_ex, draw_ey = nil, nil
+            end
+        end
+    end
+
+    -- --- Clamp the start point ---
+    if last_inside then
+        draw_sx = last_x
+        draw_sy = last_y
+    else
+        if math_abs(last_x - cx) < radius and math_abs(last_y - cy) < radius then
+            draw_sx = last_x
+            draw_sy = last_y
+        else
+            local minimap_last_x = cx + radius * (dx > 0 and 1 or -1)
+            local minimap_last_y = cy + radius * (dy > 0 and 1 or -1)
+
+            local delta_last_x = (minimap_last_x - last_x) / dx
+            local delta_last_y = (minimap_last_y - last_y) / dy
+
+            if delta_last_x < delta_last_y and delta_last_x < 0 then
+                draw_sx = minimap_last_x
+                draw_sy = last_y + dy * delta_last_x
+            else
+                draw_sx = last_x + dx * delta_last_y
+                draw_sy = minimap_last_y
+            end
+
+            if math_abs(draw_sx - cx) > radius * 1.01 or
+               math_abs(draw_sy - cy) > radius * 1.01 then
+                draw_sx, draw_sy = nil, nil
+            end
+        end
+
+        if draw_sx and draw_sy and is_round(draw_sx - cx, draw_sy - cy) then
+            if lenpc < radius2 then
+                local dcx = cx - cur_x
+                local dcy = cy - cur_y
+                local len_dc = dcx * dcx + dcy * dcy
+                local len_d = dx * dx + dy * dy
+                local len_ddc = dx * dcx + dy * dcy
+                local d_sqrt = (len_ddc * len_ddc - len_d * (len_dc - radius2)) ^ 0.5
+
+                draw_sx = cur_x - dx * (-len_ddc - d_sqrt) / len_d
+                draw_sy = cur_y - dy * (-len_ddc - d_sqrt) / len_d
+
+                if (draw_sx - px) / math_abs(draw_sx - px) ~= (last_x - px) / math_abs(last_x - px) or
+                   (draw_sy - py) / math_abs(draw_sy - py) ~= (last_y - py) / math_abs(last_y - py) then
+                    draw_sx, draw_sy = nil, nil
+                end
+            else
+                draw_sx, draw_sy = nil, nil
+            end
+        end
+    end
+
+    if draw_sx and draw_sy and draw_ex and draw_ey then
+        return draw_sx, draw_sy, draw_ex, draw_ey
+    end
+    return nil
+end
+
+function Routes:DrawClustering(frame, route_data, getXY, width, color, minimapInfo)
+    if not db.defaults.draw_cluster_lines then return end
+    if not route_data.metadata then return end
+
+    local defaults = db.defaults
+    local zone_color = {
+        color[1],
+        color[2],
+        color[3],
+        (color[4] or 1) * 0.4,
+    }
+    local zone_width = width * 0.5
+
+    local isMinimap = minimapInfo and true or false
+
+    for cluster_idx = 1, #route_data.metadata do
+        local rep_point = route_data.route[cluster_idx]
+        if rep_point and rep_point ~= defaults.fake_point then
+            local rep_sx, rep_sy, rep_visible
+            if isMinimap then
+                -- world coordinates (unrotated)
+                local key = format("%s;%s", minimapInfo.zoneID, rep_point)
+                rep_sx, rep_sy = X_cache[key], Y_cache[key]
+                rep_visible = true
+            else
+                rep_sx, rep_sy, rep_visible = getXY(rep_point)
+            end
+
+            local cluster = route_data.metadata[cluster_idx]
+            for node_idx = 1, #cluster do
+                local node_point = cluster[node_idx]
+                if node_point and node_point ~= defaults.fake_point then
+                    local node_sx, node_sy, node_visible
+                    if isMinimap then
+                        local key = format("%s;%s", minimapInfo.zoneID, node_point)
+                        node_sx, node_sy = X_cache[key], Y_cache[key]
+                        node_visible = true
+                    else
+                        node_sx, node_sy, node_visible = getXY(node_point)
+                    end
+
+                    if isMinimap then
+						if node_sx and node_sy and rep_sx and rep_sy and not (
+							( node_sx < minimapInfo.minX and rep_sx < minimapInfo.minX ) or
+							( node_sx > minimapInfo.maxX and rep_sx > minimapInfo.maxX ) or
+							( node_sy < minimapInfo.minY and rep_sy < minimapInfo.minY ) or
+							( node_sy > minimapInfo.maxY and rep_sy > minimapInfo.maxY )
+						)
+						then
+							-- Clip the segment in world coordinates
+							local s_x, s_y, e_x, e_y = self:ClampLine(
+								rep_sx, rep_sy,
+								node_sx, node_sy,
+								minimapInfo.cx, minimapInfo.cy,
+								minimapInfo.radius
+							)
+							if s_x then
+								-- Convert to screen coordinates with rotation and scaling
+								local function worldToScreen(wx, wy)
+									if minimapInfo.minimap_rotate then
+										local dx, dy = wx - minimapInfo.cx, wy - minimapInfo.cy
+										wx = minimapInfo.cx + dx * minimapInfo.cos - dy * minimapInfo.sin
+										wy = minimapInfo.cy + dx * minimapInfo.sin + dy * minimapInfo.cos
+									end
+									local sx = (wx - minimapInfo.minX) * minimapInfo.scale_x
+									local sy = minimapInfo.minimap_h - (wy - minimapInfo.minY) * minimapInfo.scale_y
+									return sx, sy
+								end
+								local screen_sx, screen_sy = worldToScreen(s_x, s_y)
+								local screen_ex, screen_ey = worldToScreen(e_x, e_y)
+								G:DrawLine(frame, screen_sx, screen_sy, screen_ex, screen_ey,
+										zone_width, zone_color, "ARTWORK")
+							end
+						end
+                    else
+                        -- Original behaviour for world map (no clipping)
+                        if node_visible or rep_visible then
+                            G:DrawLine(frame, rep_sx, rep_sy, node_sx, node_sy,
+                                       zone_width, zone_color, "ARTWORK")
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+function Routes:DrawCETSPZonesMinimap(route_data, currentZoneID, cx, cy, minX, minY,
+									  scale_x, scale_y, minimap_h, minimap_rotate,
+									  cos, sin, radius, minimapScale)
+	local defaults = db.defaults
+	local vis_radius = radius * 1.5
+
+	local function getXY(point)
+		local key = format("%s;%s", currentZoneID, point)
+		local wx, wy = X_cache[key], Y_cache[key]
+		if minimap_rotate then
+			local dx, dy = wx - cx, wy - cy
+			wx = cx + dx * cos - dy * sin
+			wy = cy + dx * sin + dy * cos
+		end
+		local sx = (wx - minX) * scale_x
+		local sy = minimap_h - (wy - minY) * scale_y
+		return sx, sy, is_inside(wx, wy, cx, cy, vis_radius)
+	end
+
+	Routes:DrawClustering(
+		Minimap, route_data,
+		getXY,
+		(route_data.width_minimap or db.defaults.width_minimap) / minimapScale,
+		route_data.color or db.defaults.color)
+end
+
 function Routes:DrawMinimapLines(forceUpdate)
 	if not db.defaults.draw_minimap then
 		G:HideLines(Minimap)
@@ -472,6 +737,23 @@ function Routes:DrawMinimapLines(forceUpdate)
 
 	local minimapScale = Minimap:GetScale()
 
+	local minimapInfo = {
+		zoneID = currentZoneID,
+		cx = cx,
+		cy = cy,
+		radius = radius,
+		minX = minX,
+		maxX = maxX,
+		minY = minY,
+		maxY = maxY,
+		scale_x = scale_x,
+		scale_y = scale_y,
+		minimap_h = minimap_h,
+		minimap_rotate = minimap_rotate,
+		cos = cos,
+		sin = sin,
+	}
+
 	for route_name, route_data in pairs( db.routes[ currentZoneID ] ) do
 		if type(route_data) == "table" and type(route_data.route) == "table" and #route_data.route > 1 then
 			-- store color/width
@@ -533,195 +815,12 @@ function Routes:DrawMinimapLines(forceUpdate)
 						( cur_y > maxY and last_y > maxY )
 					)
 					then
-						-- default all to not drawing
-						local draw_sx = nil
-						local draw_sy = nil
-						local draw_ex = nil
-						local draw_ey = nil
-
-						-- both inside - easy! draw
-						if cur_inside and last_inside then
-							draw_sx = last_x
-							draw_sy = last_y
-							draw_ex = cur_x
-							draw_ey = cur_y
-						else
-							-- direction of line
-							local dx = last_x - cur_x
-							local dy = last_y - cur_y
-
-							-- calculate point on perpendicular line
-							local zx = cx - dy
-							local zy = cy + dx
-
-							-- nudge it a bit so we dont get div by 0 problems
-							if dx == 0 then dx = div_by_zero_nudge end
-							if dy == 0 then dy = div_by_zero_nudge end
-
-							-- calculate intersection point
-							local nd = ((cx   -last_x)*(cy-zy) - (cx-zx)*(cy   -last_y)) /
-									   ((cur_x-last_x)*(cy-zy) - (cx-zx)*(cur_y-last_y))
-
-							-- perpendicular point (closest to center on the line given)
-							local px = last_x + nd * -dx
-							local py = last_y + nd * -dy
-
-							-- check range of intersect point
-							local dpc_x = cx - px
-							local dpc_y = cy - py
-
-							-- distance^2 of the perpendicular point
-							local lenpc = dpc_x*dpc_x + dpc_y*dpc_y
-
-							-- the line can only intersect if the perpendicular point is at
-							-- least closer than the furthest away point (one of the corners)
-							if lenpc < 2*radius2 then
-
-								-- if inside - ready to draw
-								if cur_inside then
-									draw_ex = cur_x
-									draw_ey = cur_y
-								else
-									-- if we're not inside we can still be in the square - if so dont do any intersection
-									-- calculations yet
-									if math_abs( cur_x - cx ) < radius and math_abs( cur_y - cy ) < radius then
-										draw_ex = cur_x
-										draw_ey = cur_y
-									else
-										-- need to intersect against the square
-										-- likely x/y to intersect with
-										local minimap_cur_x  = cx + radius * (dx < 0 and 1 or -1)
-										local minimap_cur_y  = cy + radius * (dy < 0 and 1 or -1)
-
-										-- which intersection is furthest?
-										local delta_cur_x = (minimap_cur_x - cur_x) / -dx
-										local delta_cur_y = (minimap_cur_y - cur_y) / -dy
-
-										-- dark magic - needs to be changed to positive signs whenever i can care about it
-										if delta_cur_x < delta_cur_y and delta_cur_x < 0 then
-											draw_ex = minimap_cur_x
-											draw_ey = cur_y + -dy*delta_cur_x
-										else
-											draw_ex = cur_x + -dx*delta_cur_y
-											draw_ey = minimap_cur_y
-										end
-
-										-- check if we didn't calculate some wonky offset - has to be inside with
-										-- some slack on accuracy
-										if math_abs( draw_ex - cx ) > radius*1.01 or
-										   math_abs( draw_ey - cy ) > radius*1.01
-										then
-											draw_ex = nil
-											draw_ey = nil
-										end
-									end
-
-									-- we might have a round corner here - lets see if the quarter with the intersection is round
-									if draw_ex and draw_ey and is_round( draw_ex - cx, draw_ey - cy ) then
-										-- if we are also within the circle-range
-										if lenpc < radius2 then
-											-- circle intersection
-											local dcx = cx - cur_x
-											local dcy = cy - cur_y
-											local len_dc = dcx*dcx + dcy*dcy
-
-											local len_d = dx*dx + dy*dy
-											local len_ddc = dx*dcx + dy*dcy
-
-											-- discriminant
-											local d_sqrt = ( len_ddc*len_ddc - len_d * (len_dc - radius2) )^0.5
-
-											-- calculate point
-											draw_ex = cur_x - dx * (-len_ddc + d_sqrt) / len_d
-											draw_ey = cur_y - dy * (-len_ddc + d_sqrt) / len_d
-
-											-- have to be on the *same* side of the perpendicular point else it's fake
-											if (draw_ex - px)/math_abs(draw_ex - px) ~= (cur_x- px)/math_abs(cur_x - px) or
-											   (draw_ey - py)/math_abs(draw_ey - py) ~= (cur_y- py)/math_abs(cur_y - py)
-											then
-												draw_ex = nil
-												draw_ey = nil
-											end
-										else
-											draw_ex = nil
-											draw_ey = nil
-										end
-									end
-								end
-
-								-- if inside - ready to draw
-								if last_inside then
-									draw_sx = last_x
-									draw_sy = last_y
-								else
-									-- if we're not inside we can still be in the square - if so dont do any intersection
-									-- calculations yet
-									if math_abs( last_x - cx ) < radius and math_abs( last_y - cy ) < radius then
-										draw_sx = last_x
-										draw_sy = last_y
-									else
-										-- need to intersect against the square
-										-- likely x/y to intersect with
-										local minimap_last_x = cx + radius * (dx > 0 and 1 or -1)
-										local minimap_last_y = cy + radius * (dy > 0 and 1 or -1)
-
-										-- which intersection is furthest?
-										local delta_last_x = (minimap_last_x - last_x) / dx
-										local delta_last_y = (minimap_last_y - last_y) / dy
-
-										-- dark magic - needs to be changed to positive signs whenever i can care about it
-										if delta_last_x < delta_last_y and delta_last_x < 0 then
-											draw_sx = minimap_last_x
-											draw_sy = last_y + dy*delta_last_x
-										else
-											draw_sx = last_x + dx*delta_last_y
-											draw_sy = minimap_last_y
-										end
-
-										-- check if we didn't calculate some wonky offset - has to be inside with
-										-- some slack on accuracy
-										if math_abs( draw_sx - cx ) > radius*1.01 or
-										   math_abs( draw_sy - cy ) > radius*1.01
-										then
-											draw_sx = nil
-											draw_sy = nil
-										end
-									end
-
-									-- we might have a round corner here - lets see if the quarter with the intersection is round
-									if draw_sx and draw_sy and is_round( draw_sx - cx, draw_sy - cy ) then
-										-- if we are also within the circle-range
-										if lenpc < radius2 then
-											-- circle intersection
-											local dcx = cx - cur_x
-											local dcy = cy - cur_y
-											local len_dc = dcx*dcx + dcy*dcy
-
-											local len_d = dx*dx + dy*dy
-											local len_ddc = dx*dcx + dy*dcy
-
-											-- discriminant
-											local d_sqrt = ( len_ddc*len_ddc - len_d * (len_dc - radius2) )^0.5
-
-											-- calculate point
-											draw_sx = cur_x - dx * (-len_ddc - d_sqrt) / len_d
-											draw_sy = cur_y - dy * (-len_ddc - d_sqrt) / len_d
-
-											-- have to be on the *same* side of the perpendicular point else it's fake
-											if (draw_sx - px)/math_abs(draw_sx - px) ~= (last_x- px)/math_abs(last_x - px) or
-											   (draw_sy - py)/math_abs(draw_sy - py) ~= (last_y- py)/math_abs(last_y - py)
-											then
-												draw_sx = nil
-												draw_sy = nil
-											end
-										else
-											draw_sx = nil
-											draw_sy = nil
-										end
-									end
-								end
-							end
-						end
+						local draw_sx, draw_sy, draw_ex, draw_ey = self:ClampLine(
+							last_x, last_y,
+							cur_x, cur_y,
+							cx, cy,
+							radius
+						)
 
 						if draw_sx and draw_sy and draw_ex and draw_ey then
 							-- translate to left bottom corner and apply scale
@@ -767,6 +866,12 @@ function Routes:DrawMinimapLines(forceUpdate)
 					last_y = cur_y
 					last_inside = cur_inside
 				end
+
+				Routes:DrawClustering(
+					Minimap, route_data, nil,
+					(route_data.width_minimap or db.defaults.width_minimap) / minimapScale,
+					route_data.color or db.defaults.color,
+					minimapInfo)
 			end
 		end
 	end
@@ -803,7 +908,16 @@ function Routes:InsertNode(zone, coord, node_name)
 					if flag then
 						tinsert(route_data.taboolist, coord)
 					else
-						route_data.length = self.TSP:InsertNode(route_data.route, route_data.metadata, self.LZName[zone], coord, route_data.cluster_dist or 65) -- 65 is the old default
+						-- Determine which solver to use based on route's algorithm setting
+						local algorithm = route_data.opt_algorithm or "TSP"
+						local solver = (algorithm == "CETSP") and self.CETSP or self.TSP
+
+						-- Call the appropriate solver's InsertNode method
+						if algorithm == "CETSP" then
+							route_data.length = solver:InsertNode(route_data.route, route_data.metadata, self.LZName[zone], coord, route_data.cetsp_radius or db.defaults.cetsp_radius)
+						else
+							route_data.length = solver:InsertNode(route_data.route, route_data.metadata, self.LZName[zone], coord, route_data.cluster_dist or 65) -- 65 is the old default
+						end
 						throttleFrame:Show()
 					end
 					break
@@ -811,6 +925,14 @@ function Routes:InsertNode(zone, coord, node_name)
 			end
 		end
 	end
+end
+
+function Routes:IsSolverRunning()
+	local running, nodes = self.TSP:IsTSPRunning()
+	if running then return running, nodes end
+
+	local running, nodes = self.CETSP:IsCETSPRunning()
+	if running then return running, nodes end
 end
 
 -- Accepts a zone name, coord and node_name
@@ -823,48 +945,18 @@ function Routes:DeleteNode(zone, coord, node_name)
 			local flag = false
 			for k, v in pairs(route_data.selection) do
 				if k == node_name or v == node_name then
+					-- Determine which solver to use based on route's algorithm setting
+					local algorithm = route_data.opt_algorithm or "TSP"
+					local solver = (algorithm == "CETSP") and self.CETSP or self.TSP
+
 					-- Delete the node if it exists in this route
-					if route_data.metadata then
-						-- this is a clustered route
-						for i = 1, #route_data.route do
-							local num_data = #route_data.metadata[i]
-							for j = 1, num_data do
-								if coord == route_data.metadata[i][j] then
-									-- recalcuate centroid
-									local x, y = self:getXY(coord)
-									local cx, cy = self:getXY(route_data.route[i])
-									if num_data > 1 then
-										-- more than 1 node in this cluster
-										cx, cy = (cx * num_data - x) / (num_data-1), (cy * num_data - y) / (num_data-1)
-										tremove(route_data.metadata[i], j)
-										route_data.route[i] = self:getID(cx, cy)
-									else
-										-- only 1 node in this cluster, just remove it
-										tremove(route_data.metadata, i)
-										tremove(route_data.route, i)
-									end
-									route_data.length = self.TSP:PathLength(route_data.route, self.LZName[zone])
-									throttleFrame:Show()
-									flag = true
-									break
-								end
-							end
-							if flag then break end
-						end
+					if solver:DeleteNode(route_data.route, route_data.metadata, self.LZName[zone], coord) then
+						-- Node was found and deleted, update path length
+						route_data.length = self.TSP:PathLength(route_data.route, self.LZName[zone])
+						throttleFrame:Show()
+						flag = true
 					else
-						-- this is not a clustered route
-						for i = 1, #route_data.route do
-							if coord == route_data.route[i] then
-								tremove(route_data.route, i)
-								route_data.length = self.TSP:PathLength(route_data.route, self.LZName[zone])
-								throttleFrame:Show()
-								flag = true
-								break
-							end
-						end
-					end
-					if not flag then
-						-- node not found yet, so search the taboolist
+						-- node not found in route, so search the taboolist
 						for i = 1, #route_data.taboolist do
 							if route_data.taboolist[i] == coord then
 								tremove(route_data.taboolist, i)
@@ -1201,6 +1293,15 @@ function RoutesPinMixin:DrawLines()
 					end
 					last_point = point
 				end
+
+				Routes:DrawClustering(
+					self, route_data,
+					function(point)
+						local x = floor(point / 10000) / 10000
+						local y = 1 - (point % 10000) / 10000
+						return x * fw, y * fh, true  -- world map has no clipping
+					end,
+					width, color)
 			end
 		end
 	end
@@ -1677,6 +1778,12 @@ options.args.options_group.args = {
 				arg = "update_distance",
 				order = 500,
 			},
+			cluster_lines = {
+				name = L["Draw Cluster Lines"], type = "toggle",
+				desc = L["Draw lines from the cluster center to each node in the cluster."],
+				arg  = "draw_cluster_lines",
+				order = 550,
+			},
 		},
 	},
 }
@@ -1755,7 +1862,7 @@ function ConfigHandler:DeleteRoute(info)
 	local zoneKey = info[2]
 	local routekey = info[3]
 	local route = Routes.routekeys[zone][routekey]
-	local is_running, route_table = Routes.TSP:IsTSPRunning()
+	local is_running, route_table = Routes:IsSolverRunning()
 	if is_running and route_table == db.routes[zone][route].route then
 		Routes:Print(L["You may not delete a route that is being optimized in the background."])
 		return
@@ -1777,7 +1884,7 @@ function ConfigHandler:RecreateRoute(info)
 	local zone = tonumber(info[2])
 	local routekey = info[3]
 	local route = Routes.routekeys[zone][routekey]
-	local is_running, route_table = Routes.TSP:IsTSPRunning()
+	local is_running, route_table = Routes:IsSolverRunning()
 	if is_running and route_table == db.routes[zone][route].route then
 		Routes:Print(L["You may not delete a route that is being optimized in the background."])
 		return
@@ -1993,23 +2100,57 @@ function ConfigHandler:SetTwoPointFiveOpt(info, v)
 	db.defaults.tsp.two_point_five_opt = v
 end
 
+-- CETSP helper functions
+function ConfigHandler:GetCETSPCollisionRadius(info)
+	local zone = tonumber(info[2])
+	local route = Routes.routekeys[zone][ info[3] ]
+	return db.routes[zone][route].cetsp_radius or db.defaults.cetsp_radius
+end
+
+function ConfigHandler:SetCETSPCollisionRadius(info, v)
+	local zone = tonumber(info[2])
+	local route = Routes.routekeys[zone][ info[3] ]
+	db.routes[zone][route].cetsp_radius = v
+end
+
+function ConfigHandler:IsCETSPSelected(info)
+	local zone = tonumber(info[2])
+	local route = Routes.routekeys[zone][ info[3] ]
+	return db.routes[zone][route].opt_algorithm == "CETSP"
+end
+
+function ConfigHandler:IsNotCETSPSelected(info)
+	return not self:IsCETSPSelected(info)
+end
+
 function ConfigHandler:DoForeground(info)
 	local zone = tonumber(info[2])
 	local route = Routes.routekeys[zone][ info[3] ]
 	local t = db.routes[zone][route]
+	local algorithm = t.opt_algorithm or "TSP"
+
 	if #t.route > 724 then
 		-- Lua has 4mb limit on table size. 725x725 will result in a table of size 525625
 		-- 524288 (or 2^19) is the max as 8 bytes per entry will give exactly 4 Mb
 		Routes:Print(L["TOO_MANY_NODES_ERROR"])
 		return
 	end
+
 	local taboos = {}
 	for tabooname, used in pairs(t.taboos) do
 		if used then
 			tinsert(taboos, db.taboo[zone][tabooname])
 		end
 	end
-	local output, meta, length, iter, timetaken = Routes.TSP:SolveTSP(t.route, t.metadata, taboos, zone, db.defaults.tsp)
+
+	local output, meta, length, iter, timetaken
+	if algorithm == "CETSP" then
+		local radius = t.cetsp_radius or db.defaults.cetsp_radius or 32
+		output, meta, length, iter, timetaken = Routes.CETSP:SolveCETSP(t.route, t.metadata, radius, taboos, zone, db.defaults.cetsp)
+	else
+		output, meta, length, iter, timetaken = Routes.TSP:SolveTSP(t.route, t.metadata, taboos, zone, db.defaults.tsp)
+	end
+
 	t.route = output
 	t.length = length
 	t.metadata = meta
@@ -2028,17 +2169,32 @@ function ConfigHandler:DoBackground(info)
 	local zone = tonumber(info[2])
 	local route = Routes.routekeys[zone][ info[3] ]
 	local t = db.routes[zone][route]
-	if #t.route > 724 then
-		Routes:Print(L["TOO_MANY_NODES_ERROR"])
-		return
-	end
+
 	local taboos = {}
 	for tabooname, used in pairs(t.taboos) do
 		if used then
 			tinsert(taboos, db.taboo[zone][tabooname])
 		end
 	end
+
+	local algorithm = t.opt_algorithm or "TSP"
+	if algorithm == "CETSP" then
+		self:DoBackgroundCETSP(zone, route, taboos)
+	else
+		self:DoBackgroundTSP(zone, route, taboos)
+	end
+end
+
+function ConfigHandler:DoBackgroundTSP(zone, route, taboos)
+	local t = db.routes[zone][route]
+
+	if #t.route > 724 then
+		Routes:Print(L["TOO_MANY_NODES_ERROR"])
+		return
+	end
+
 	local running, errormsg = Routes.TSP:SolveTSPBackground(t.route, t.metadata, taboos, zone, db.defaults.tsp)
+
 	if (running == 1) then
 		Routes:Print(L["Now running TSP in the background..."])
 		local dispLength;
@@ -2075,6 +2231,74 @@ function ConfigHandler:DoBackground(info)
 		end)
 	elseif (running == 2) then
 		Routes:Print(L["There is already a TSP running in background. Wait for it to complete first."])
+	elseif (running == 3) then
+		-- This should never happen, but is here as a fallback
+		Routes:Print(L["The following error occured in the background path generation coroutine, please report to Grum or Xinhuan:"]);
+		Routes:Print(errormsg);
+	end
+end
+
+function ConfigHandler:DoBackgroundCETSP(zone, route, taboos)
+	local t = db.routes[zone][route]
+
+	if #t.route > 724 then
+		Routes:Print(L["TOO_MANY_NODES_ERROR"])
+		return
+	end
+
+	local radius = t.cetsp_radius or db.defaults.cetsp_radius or 32
+	local running, errormsg = Routes.CETSP:SolveCETSPBackground(t.route, t.metadata, radius, taboos, zone, db.defaults.cetsp)
+
+	if (running == 1) then
+		Routes:Print(L["Now running CETSP in the background..."])
+		local dispLength;
+		Routes.CETSP:SetStatusFunction(function(stage, pass, progress, length)
+			local frame = LibStub("AceConfigDialog-3.0").OpenFrames["Routes"]
+			if frame then
+				if length then
+					dispLength = length
+				end
+				if dispLength then
+					frame:SetStatusText(L["Stage %d - Pass %d: %d%% - %d yards"]:format(stage, pass, progress*100, dispLength))
+				else
+					frame:SetStatusText(L["Stage %d - Pass %d: %d%%"]:format(stage, pass, progress*100))
+				end
+			end
+		end)
+		Routes.CETSP:SetFinishFunction(function(output, meta, length, stageIter, timetaken)
+			t.route = output
+			t.length = length
+			t.metadata = meta
+
+			local stageIterStr = ""
+			for i = 1, 5 do
+				if stageIter[i] then
+					if stageIterStr ~= "" then
+						stageIterStr = stageIterStr .. ", "
+					end
+					stageIterStr = stageIterStr .. ("S%d: %d"):format(i, iter)
+				end
+			end
+
+			local msg = L["Path with %d nodes found with length %.2f yards in %.2f seconds."]:format(#output, length, timetaken)
+			if stageIterStr ~= "" then
+				msg = msg .. (" (%s)"):format(stageIterStr);
+			end
+			Routes:Print(msg)
+			local frame = LibStub("AceConfigDialog-3.0").OpenFrames["Routes"]
+			if frame then
+				frame:SetStatusText(msg)
+			end
+			-- redraw lines
+			local AutoShow = Routes:GetModule("AutoShow", true)
+			if AutoShow and db.defaults.use_auto_showhide then
+				AutoShow:ApplyVisibility()
+			end
+			Routes:DrawWorldmapLines()
+			Routes:DrawMinimapLines(true)
+		end)
+	elseif (running == 2) then
+		Routes:Print(L["There is already a TSP/CETSP running in background. Wait for it to complete first."])
 	elseif (running == 3) then
 		-- This should never happen, but is here as a fallback
 		Routes:Print(L["The following error occured in the background path generation coroutine, please report to Grum or Xinhuan:"]);
@@ -2251,31 +2475,70 @@ do
 				name = L["Optimize Route"],
 				disabled = "IsBeingManualEdited",
 				args = {
+					algorithm = {
+						type = "select",
+						name = L["Algorithm"],
+						desc = L["Select the algorithm to optimize the route with."],
+						values = {
+							["TSP"] = L["TSP Solver"],
+							["CETSP"] = L["Close Enough TSP Solver"]
+						},
+						get = function(info)
+							local zone = tonumber(info[2])
+							local route = Routes.routekeys[zone][ info[3] ]
+							return db.routes[zone][route].opt_algorithm or "TSP"
+						end,
+						set = function(info, v)
+							local zone = tonumber(info[2])
+							local route = Routes.routekeys[zone][ info[3] ]
+							db.routes[zone][route].opt_algorithm = v
+						end,
+						order = 0,
+						width = "double",
+					},
 					desc = {
 						type = "description",
 						name = ConfigHandler.GetRouteDesc,
-						order = 0,
+						order = 10,
 					},
 					desc2 = {
 						type = "description",
 						name = ConfigHandler.GetShortClusterDesc,
-						order = 1,
+						order = 11,
 					},
 					desc3 = {
 						type = "description",
 						name = ConfigHandler.GetRouteClusterRadiusDesc,
 						hidden = "IsNotCluster",
 						disabled = "IsNotCluster",
-						order = 2,
+						order = 12,
+					},
+					cetsp_header = {
+						type = "header",
+						name = L["Close Enough TSP"],
+						hidden = "IsNotCETSPSelected",
+						order = 35,
+					},
+					cetsp_radius = {
+						name = L["Collision Radius"], type = "range",
+						desc = L["Proximity radius in yards for node satisfaction in CETSP"],
+						min = 5, max = 100, step = 1,
+						get = "GetCETSPCollisionRadius",
+						set = "SetCETSPCollisionRadius",
+						hidden = "IsNotCETSPSelected",
+						disabled = "IsNotCETSPSelected",
+						order = 37,
 					},
 					cluster_header = {
 						type = "header",
 						name = L["Route Clustering"],
+						hidden = "IsCETSPSelected",
 						order = 40,
 					},
 					desc_cluster = {
 						type  = "description",
 						name  = L["CLUSTER_DESC"],
+						hidden = "IsCETSPSelected",
 						order = 50,
 					},
 					cluster_dist = {
@@ -2284,37 +2547,38 @@ do
 						min = 10, max = 200, step = 1,
 						get = "GetDefaultClusterDist",
 						set = "SetDefaultClusterDist",
-						hidden = "IsCluster",
-						disabled = "IsCluster",
+						hidden = function(info) return ConfigHandler:IsCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
+						disabled = function(info) return ConfigHandler:IsCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
 						order = 60,
 					},
 					cluster_bl = {
 						type  = "description",
 						name  = " ",
+						hidden = "IsCETSPSelected",
 						order = 70,
 					},
 					cluster = {
 						name = L["Cluster"], type = "execute",
 						desc = L["Cluster this route"],
 						func = "ClusterRoute",
-						hidden = "IsCluster",
-						disabled = "IsCluster",
+						hidden = function(info) return ConfigHandler:IsCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
+						disabled = function(info) return ConfigHandler:IsCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
 						order = 71,
 					},
 					cluster_background = {
 						name = L["Cluster (in Background)"], type = "execute",
 						desc = L["Cluster this route in the background"],
 						func = "ClusterRouteBackground",
-						hidden = "IsCluster",
-						disabled = "IsCluster",
+						hidden = function(info) return ConfigHandler:IsCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
+						disabled = function(info) return ConfigHandler:IsCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
 						order = 72,
 					},
 					uncluster = {
 						name = L["Uncluster"], type = "execute",
 						desc = L["Uncluster this route"],
 						func = "UnClusterRoute",
-						hidden = "IsNotCluster",
-						disabled = "IsNotCluster",
+						hidden = function(info) return ConfigHandler:IsNotCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
+						disabled = function(info) return ConfigHandler:IsNotCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
 						order = 80,
 					},
 					optimize_header = {
@@ -2327,6 +2591,7 @@ do
 						order = 150,
 						name = L["Extra optimization"],
 						inline = true,
+						hidden = "IsCETSPSelected",
 						args = {
 							two_point_five_opt_disc = {
 								name = L["ExtraOptDesc"], type = "description",
@@ -3139,7 +3404,7 @@ do
 		end
 		local copy_of_taboo_data = {route = {}, nodes = {}, fakenodes = {}}
 		if info[1] == "routes_group" then
-			local is_running, route_table = Routes.TSP:IsTSPRunning()
+			local is_running, route_table = Routes:IsSolverRunning()
 			if is_running and route_table == taboo_data.route then return end
 			if ConfigHandler:IsCluster(info) then return end
 			copy_of_taboo_data.isroute = true
@@ -3468,7 +3733,7 @@ do
 		local route = Routes.routekeys[zone][ info[3] ]
 		local route_table = db.routes[zone][route]
 		if taboo_edit_list[route_table] then return true end
-		local is_running, route_table2 = Routes.TSP:IsTSPRunning()
+		local is_running, route_table2 = Routes:IsSolverRunning()
 		if is_running and route_table2 == route_table.route then
 			return true
 		end
@@ -3763,6 +4028,25 @@ function G:HideLines(C)
 			C.Routes_Lines_Used[i]:Hide()
 			tinsert(C.Routes_Lines,tremove(C.Routes_Lines_Used))
 		end
+	end
+end
+
+-- Draw a circle on the map
+function G:DrawCircle(C, centerX, centerY, radius, color, width, layer)
+	local segments = 24  -- number of line segments to form the circle
+	local lastX, lastY
+
+	for i = 0, segments do
+		local angle = (i / segments) * math.pi * 2
+		local x = centerX + radius * math.cos(angle)
+		local y = centerY + radius * math.sin(angle)
+
+		if lastX and lastY then
+			G:DrawLine(C, lastX, lastY, x, y, width, color, layer)
+		end
+
+		lastX = x
+		lastY = y
 	end
 end
 
