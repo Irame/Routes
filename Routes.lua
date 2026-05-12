@@ -129,6 +129,10 @@ local defaults = {
 				twoopt_passes      = 3,     -- Number of times to perform 2-opt passes
 				two_point_five_opt = false, -- Perform optimized 2-opt pass
 			},
+			cetsp = {
+				maxPasses = 10,
+				maxVNS = 20,
+			},
 			prof_options = {
 				['*'] = "Always",
 			},
@@ -137,6 +141,7 @@ local defaults = {
 			line_gaps = true,
 			line_gaps_skip_cluster = true,
 			cluster_dist = 60,
+			cetsp_radius = 32,
 			callbacks = {
 				['*'] = true
 			}
@@ -1993,26 +1998,62 @@ function ConfigHandler:SetTwoPointFiveOpt(info, v)
 	db.defaults.tsp.two_point_five_opt = v
 end
 
+-- CETSP helper functions
+function ConfigHandler:GetCETSPCollisionRadius(info)
+	local zone = tonumber(info[2])
+	local route = Routes.routekeys[zone][ info[3] ]
+	return db.routes[zone][route].cetsp_radius or db.defaults.cetsp_radius
+end
+
+function ConfigHandler:SetCETSPCollisionRadius(info, v)
+	local zone = tonumber(info[2])
+	local route = Routes.routekeys[zone][ info[3] ]
+	db.routes[zone][route].cetsp_radius = v
+end
+
+function ConfigHandler:IsCETSPSelected(info)
+	local zone = tonumber(info[2])
+	local route = Routes.routekeys[zone][ info[3] ]
+	return db.routes[zone][route].opt_algorithm == "CETSP"
+end
+
+function ConfigHandler:IsNotCETSPSelected(info)
+	return not self:IsCETSPSelected(info)
+end
+
 function ConfigHandler:DoForeground(info)
 	local zone = tonumber(info[2])
 	local route = Routes.routekeys[zone][ info[3] ]
 	local t = db.routes[zone][route]
+	local algorithm = t.opt_algorithm or "TSP"
+
 	if #t.route > 724 then
 		-- Lua has 4mb limit on table size. 725x725 will result in a table of size 525625
 		-- 524288 (or 2^19) is the max as 8 bytes per entry will give exactly 4 Mb
 		Routes:Print(L["TOO_MANY_NODES_ERROR"])
 		return
 	end
+
 	local taboos = {}
 	for tabooname, used in pairs(t.taboos) do
 		if used then
 			tinsert(taboos, db.taboo[zone][tabooname])
 		end
 	end
-	local output, meta, length, iter, timetaken = Routes.TSP:SolveTSP(t.route, t.metadata, taboos, zone, db.defaults.tsp)
+
+	local output, meta, orig_route, length, iter, timetaken
+	if algorithm == "CETSP" then
+		local radius = t.cetsp_radius or db.defaults.cetsp_radius or 32
+		orig_route = t.orig_route or t.route
+		output, length, iter, timetaken = Routes.CETSP:SolveCETSP(orig_route, radius, taboos, zone, db.defaults.cetsp)
+	else
+		output, meta, length, iter, timetaken = Routes.TSP:SolveTSP(t.route, t.metadata, taboos, zone, db.defaults.tsp)
+	end
+
 	t.route = output
 	t.length = length
 	t.metadata = meta
+	t.orig_route = orig_route
 	Routes:Print(L["Path with %d nodes found with length %.2f yards after %d iterations in %.2f seconds."]:format(#output, length, iter, timetaken))
 
 	-- redraw lines
@@ -2028,21 +2069,34 @@ function ConfigHandler:DoBackground(info)
 	local zone = tonumber(info[2])
 	local route = Routes.routekeys[zone][ info[3] ]
 	local t = db.routes[zone][route]
+	local algorithm = t.opt_algorithm or "TSP"
+
 	if #t.route > 724 then
 		Routes:Print(L["TOO_MANY_NODES_ERROR"])
 		return
 	end
+
 	local taboos = {}
 	for tabooname, used in pairs(t.taboos) do
 		if used then
 			tinsert(taboos, db.taboo[zone][tabooname])
 		end
 	end
-	local running, errormsg = Routes.TSP:SolveTSPBackground(t.route, t.metadata, taboos, zone, db.defaults.tsp)
+	local running, errormsg
+	if algorithm == "CETSP" then
+		local radius = t.cetsp_radius or db.defaults.cetsp_radius or 32
+		t.orig_route = t.orig_route or t.route
+		t.metadata = nil
+		running, errormsg = Routes.CETSP:SolveCETSPBackground(t.orig_route, radius, taboos, zone, db.defaults.cetsp)
+	else
+		t.orig_route = nil
+		running, errormsg = Routes.TSP:SolveTSPBackground(t.route, t.metadata, taboos, zone, db.defaults.tsp)
+	end
 	if (running == 1) then
 		Routes:Print(L["Now running TSP in the background..."])
+		local algoObj = algorithm == "CETSP" and Routes.CETSP or Routes.TSP
 		local dispLength;
-		Routes.TSP:SetStatusFunction(function(pass, progress, length)
+		algoObj:SetStatusFunction(function(pass, progress, length)
 			local frame = LibStub("AceConfigDialog-3.0").OpenFrames["Routes"]
 			if frame then
 				if length then
@@ -2055,7 +2109,7 @@ function ConfigHandler:DoBackground(info)
 				end
 			end
 		end)
-		Routes.TSP:SetFinishFunction(function(output, meta, length, iter, timetaken)
+		algoObj:SetFinishFunction(function(output, meta, length, iter, timetaken)
 			t.route = output
 			t.length = length
 			t.metadata = meta
@@ -2251,31 +2305,70 @@ do
 				name = L["Optimize Route"],
 				disabled = "IsBeingManualEdited",
 				args = {
+					algorithm = {
+						type = "select",
+						name = L["Algorithm"],
+						desc = L["Select the algorithm to optimize the route with."],
+						values = {
+							["TSP"] = L["TSP Solver"],
+							["CETSP"] = L["Close Enough TSP Solver"]
+						},
+						get = function(info)
+							local zone = tonumber(info[2])
+							local route = Routes.routekeys[zone][ info[3] ]
+							return db.routes[zone][route].opt_algorithm or "TSP"
+						end,
+						set = function(info, v)
+							local zone = tonumber(info[2])
+							local route = Routes.routekeys[zone][ info[3] ]
+							db.routes[zone][route].opt_algorithm = v
+						end,
+						order = 0,
+						width = "double",
+					},
 					desc = {
 						type = "description",
 						name = ConfigHandler.GetRouteDesc,
-						order = 0,
+						order = 10,
 					},
 					desc2 = {
 						type = "description",
 						name = ConfigHandler.GetShortClusterDesc,
-						order = 1,
+						order = 11,
 					},
 					desc3 = {
 						type = "description",
 						name = ConfigHandler.GetRouteClusterRadiusDesc,
 						hidden = "IsNotCluster",
 						disabled = "IsNotCluster",
-						order = 2,
+						order = 12,
+					},
+					cetsp_header = {
+						type = "header",
+						name = L["Close Enough TSP"],
+						hidden = "IsNotCETSPSelected",
+						order = 35,
+					},
+					cetsp_radius = {
+						name = L["Collision Radius"], type = "range",
+						desc = L["Proximity radius in yards for node satisfaction in CETSP"],
+						min = 5, max = 100, step = 1,
+						get = "GetCETSPCollisionRadius",
+						set = "SetCETSPCollisionRadius",
+						hidden = "IsNotCETSPSelected",
+						disabled = "IsNotCETSPSelected",
+						order = 37,
 					},
 					cluster_header = {
 						type = "header",
 						name = L["Route Clustering"],
+						hidden = "IsCETSPSelected",
 						order = 40,
 					},
 					desc_cluster = {
 						type  = "description",
 						name  = L["CLUSTER_DESC"],
+						hidden = "IsCETSPSelected",
 						order = 50,
 					},
 					cluster_dist = {
@@ -2284,29 +2377,30 @@ do
 						min = 10, max = 200, step = 1,
 						get = "GetDefaultClusterDist",
 						set = "SetDefaultClusterDist",
-						hidden = "IsCluster",
-						disabled = "IsCluster",
+						hidden = function(info) return ConfigHandler:IsCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
+						disabled = function(info) return ConfigHandler:IsCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
 						order = 60,
 					},
 					cluster_bl = {
 						type  = "description",
 						name  = " ",
+						hidden = "IsCETSPSelected",
 						order = 70,
 					},
 					cluster = {
 						name = L["Cluster"], type = "execute",
 						desc = L["Cluster this route"],
 						func = "ClusterRoute",
-						hidden = "IsCluster",
-						disabled = "IsCluster",
+						hidden = function(info) return ConfigHandler:IsCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
+						disabled = function(info) return ConfigHandler:IsCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
 						order = 71,
 					},
 					cluster_background = {
 						name = L["Cluster (in Background)"], type = "execute",
 						desc = L["Cluster this route in the background"],
 						func = "ClusterRouteBackground",
-						hidden = "IsCluster",
-						disabled = "IsCluster",
+						hidden = function(info) return ConfigHandler:IsCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
+						disabled = function(info) return ConfigHandler:IsCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
 						order = 72,
 					},
 					uncluster = {

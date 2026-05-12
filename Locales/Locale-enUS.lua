@@ -158,6 +158,13 @@ L["Reset the line settings to defaults"] = true
 
 L["Optimize Route"] = true
 L["Route Optimizing"] = true
+L["Algorithm"] = true
+L["Select the algorithm to optimize the route with."] = true
+L["TSP Solver"] = true
+L["Close Enough TSP Solver"] = true
+L["Close Enough TSP"] = true
+L["Collision Radius"] = true
+L["Proximity radius in yards for node satisfaction in CETSP"] = true
 L["Extra optimization"] = true
 L["ExtraOptDesc"] = "Turning on this option will make optimizing the route take approximately 40% longer, but will generate -slightly- better routes. Recommended setting is OFF."
 L["Foreground"] = true
@@ -169,6 +176,7 @@ L["Now running TSP in the background..."] = true
 L["There is already a TSP running in background. Wait for it to complete first."] = true
 L["The following error occured in the background path generation coroutine, please report to Grum or Xinhuan:"] = true
 L["TOO_MANY_NODES_ERROR"] = "This route has more than 724 nodes. Please reduce it by removing some nodes or by clustering otherwise memory allocation errors will occur."
+L["CETSP background optimization not yet implemented. Please use foreground."] = true
 L["Pass %d: %d%% - %d yards"] = true
 L["Pass %d: %d%%"] = true
 
