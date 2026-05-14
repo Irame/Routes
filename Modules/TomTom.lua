@@ -185,7 +185,7 @@ options = {
 			name = L["Waypoint hit distance"], type = "range",
 			desc = L["This is the distance in yards away from a waypoint to consider as having reached it so that the next node in the route can be added as the waypoint"],
 			min  = 5,
-			max  = 80, -- This is the maximum range of node detection for "Find X" profession skills
+			max  = 140, -- This is the maximum range of node detection for "Find X" profession skills
 			step = 1,
 			order = 10,
 			width = "double",
