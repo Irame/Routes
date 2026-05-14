@@ -1,0 +1,14 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "pack",
+      "type": "shell",
+      "command": "${env:HOME}/GitRepos/packager/release.sh",
+      "args": [
+        "-dzoe"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
