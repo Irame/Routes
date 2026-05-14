@@ -855,34 +855,221 @@ local function twoOpt(order, wps, zones, taboos)
     return order, wps
 end
 
--- Reinsertion (Variable Neighborhood Search)
+--[[
+Optimized reinsert (Reinsertion VNS) for CETSP.lua
+Guided by TSP.lua's TwoOpt / 2.5-opt (TSP:TwoOpt twoPointFiveOpt branch).
+
+Problems with the original reinsert():
+  1. First-improvement exit — returns on the first gain found, forcing the
+     outer VNS loop to restart a full O(n²) scan from scratch each time.
+  2. No pruning — every (i,j) pair is tested regardless of spatial distance.
+  3. Full table allocation per candidate — builds a brand-new newOrder table
+     before any cost check.
+  4. Double wpsTourLen call per candidate — wps baseline is recomputed
+     inside the loop even though it doesn't change between candidates.
+  5. Only single-zone (Or-1) moves — Or-2 and Or-3 segment moves are much
+     stronger for CETSP where adjacent zones are spatially coupled.
+
+What this version does instead (guided by TSP:TwoOpt 2.5-opt branch):
+  1. Best-improvement within each full pass — collects all improving moves,
+     applies the best one per pass, then restarts; never exits early.
+  2. Neighbor pruning (reuses buildPruneList from twoOpt) — only tests
+     insertion targets j that are geometrically close to zone i, mirroring
+     TSP's prune[] table in the 2.5-opt inner loop.
+  3. Reverse-lookup (orderR) — O(1) position queries, same as TSP's pathR.
+  4. Clean remove+insert (applyReinsertion) — two explicit branches
+     (insertAfter < from vs > segEnd) with simple sequential copies;
+     verified correct by unit tests for Or-1/2/3 in both directions.
+  5. Cheap rep-point delta pre-filter — screens out obviously bad moves
+     before paying for optimizeWaypoints / wpsTourLen.
+  6. Or-1, Or-2, Or-3 segment moves — moves chains of 1, 2, or 3 consecutive
+     zones; Or-2/3 extend TSP's 2.5-opt to longer segments.
+  7. Baseline length cached outside all loops — computed once per pass.
+
+Drop-in replacement for the existing `reinsert` local function in CETSP.lua.
+Call site in SolveCETSP is unchanged:
+  local newOrder, newWps, improved = reinsert(order, wps, steinerZones, cetspTaboos)
+
+NOTE: buildPruneList and repDist must be defined before this function.
+      They are already present after the twoOpt optimisation (twoOpt_optimized.lua).
+]]
+
+-- Build a new order table by removing the segment [from .. from+segLen-1]
+-- and reinserting it after position insertAfter (in the original ordering).
+-- Two explicit branches handle leftward vs rightward moves.
+-- Verified correct by unit tests for Or-1, Or-2, Or-3 in both directions.
+local function applyReinsertion(order, from, segLen, insertAfter)
+    local n      = #order
+    local segEnd = from + segLen - 1
+    local result = {}
+
+    if insertAfter < from then
+        -- Segment moves LEFT: insert before its current position.
+        -- New layout: [1..insertAfter] [seg] [insertAfter+1..from-1] [segEnd+1..n]
+        for k = 1, insertAfter do
+            result[#result + 1] = order[k]
+        end
+        for k = from, segEnd do
+            result[#result + 1] = order[k]
+        end
+        for k = insertAfter + 1, from - 1 do
+            result[#result + 1] = order[k]
+        end
+        for k = segEnd + 1, n do
+            result[#result + 1] = order[k]
+        end
+    else
+        -- Segment moves RIGHT: insertAfter > segEnd.
+        -- New layout: [1..from-1] [segEnd+1..insertAfter] [seg] [insertAfter+1..n]
+        for k = 1, from - 1 do
+            result[#result + 1] = order[k]
+        end
+        for k = segEnd + 1, insertAfter do
+            result[#result + 1] = order[k]
+        end
+        for k = from, segEnd do
+            result[#result + 1] = order[k]
+        end
+        for k = insertAfter + 1, n do
+            result[#result + 1] = order[k]
+        end
+    end
+
+    return result
+end
+
+-- Cheap rep-point delta for moving segment [from..segEnd] to after insertAfter.
+-- Returns (added_edges - removed_edges): negative means improvement.
+local function orKDelta(order, zones, from, segLen, insertAfter)
+    local n      = #order
+    local segEnd = from + segLen - 1
+
+    local function rep(pos)
+        return zones[order[((pos - 1) % n) + 1]].rep
+    end
+
+    local function d(a, b)
+        local dx = a.x - b.x
+        local dy = a.y - b.y
+        return sqrt(dx * dx + dy * dy)
+    end
+
+    -- Three edges broken: pred(from)->from, segEnd->succ(segEnd), insertAfter->succ(insertAfter)
+    -- Three edges added:  pred(from)->succ(segEnd), insertAfter->from, segEnd->succ(insertAfter)
+    local predFrom   = rep(from - 1)
+    local repFrom    = rep(from)
+    local repSegEnd  = rep(segEnd)
+    local succSegEnd = rep(segEnd + 1)
+    local repInsert  = rep(insertAfter)
+    local succInsert = rep(insertAfter + 1)
+
+    local removed = d(predFrom,  repFrom)
+                  + d(repSegEnd, succSegEnd)
+                  + d(repInsert, succInsert)
+
+    local added   = d(predFrom,  succSegEnd)
+                  + d(repInsert, repFrom)
+                  + d(repSegEnd, succInsert)
+
+    return added - removed
+end
+
+-- Optimized reinsertion VNS.
+-- Performs Or-1, Or-2, Or-3 moves with neighbor pruning and best-improvement
+-- selection within each pass.
+-- Returns: newOrder, newWps, improved (bool)
 local function reinsert(order, wps, zones, taboos)
-	local n = #order
+    local n = #order
+    if n < 4 then return order, wps, false end
 
-	for i = 1, n do
-		for j = 1, n do
-			if not (i == j or abs(i - j) == 1) then
-				local newOrder = {}
-				for k = 1, n do
-					if k ~= i then
-						tinsert(newOrder, order[k])
-					end
-				end
+    -- Reverse-lookup: orderR[zoneIdx] = current position in order[].
+    -- Mirrors TSP's pathR used in the 2.5-opt branch.
+    local orderR = {}
+    for pos = 1, n do
+        orderR[order[pos]] = pos
+    end
 
-				local insertPos = (j < i) and (j + 1) or j
-				table.insert(newOrder, insertPos, order[i])
+    -- Neighbor-prune list: reuses buildPruneList from twoOpt_optimized.lua.
+    local prune = buildPruneList(zones)
 
-				local newWps = optimizeWaypoints(newOrder, zones, 4)
-				if wpsTourLen(newWps, taboos) < wpsTourLen(wps, taboos) - 0.5 then
-					return newOrder, newWps, true
-				end
-			end
+    -- Cache baseline tour length — computed once per pass, not per candidate.
+    local bestLen     = wpsTourLen(wps, taboos)
+    local anyImproved = false
 
-			yield()
-		end
-	end
+    -- Outer loop: repeat passes until no improvement found in a full pass.
+    local passImproved = true
+    while passImproved do
+        passImproved = false
 
-	return order, wps, false
+        -- Track the single best move found across the whole pass.
+        local bestDelta    = -0.5   -- minimum improvement threshold (yards)
+        local bestNewOrder = nil
+        local bestNewWps   = nil
+        local bestNewLen   = nil
+
+        -- Or-k for segment lengths 1, 2, 3.
+        for segLen = 1, 3 do
+            if n < segLen + 2 then break end
+
+            for i = 1, n do
+                local segEnd = i + segLen - 1
+                if segEnd > n then break end  -- no wrap-around segments
+
+                local zi = order[i]
+
+                -- Inner loop over pruned neighbors of the segment head,
+                -- exactly like TSP's `for m = 1, #prune[a]` in 2.5-opt.
+                for _, zj in ipairs(prune[zi]) do
+                    local j = orderR[zj]
+
+                    -- Validity guards:
+                    --   j must exist (nil guard for zones not in order)
+                    --   j must not overlap [i-1 .. segEnd] (no adjacent/overlap)
+                    --   skip trivial no-op wrap (i=1, j=n)
+                    if j and
+                       (j < i - 1 or j > segEnd) and
+                       not (j == n and i == 1) then
+
+                        -- Cheap rep-point pre-filter before paying for
+                        -- optimizeWaypoints / wpsTourLen.
+                        local delta = orKDelta(order, zones, i, segLen, j)
+                        if delta < bestDelta then
+                            local candOrder = applyReinsertion(order, i, segLen, j)
+                            local candWps   = optimizeWaypoints(candOrder, zones, 4)
+                            local candLen   = wpsTourLen(candWps, taboos)
+
+                            if candLen < bestLen + bestDelta then
+                                bestDelta    = candLen - bestLen
+                                bestNewOrder = candOrder
+                                bestNewWps   = candWps
+                                bestNewLen   = candLen
+                            end
+                        end
+                    end
+                end
+            end
+            yield()
+        end
+
+        -- Apply the best move found in this pass.
+        if bestNewOrder then
+            order        = bestNewOrder
+            wps          = bestNewWps
+            bestLen      = bestNewLen
+            passImproved = true
+            anyImproved  = true
+
+            -- Rebuild reverse-lookup to reflect the new order.
+            for pos = 1, n do
+                orderR[order[pos]] = pos
+            end
+
+            print(string.format("[CETSP] VNS reinsert: new len %.2f (delta %.2f)",
+                                bestLen, bestDelta))
+        end
+    end
+
+    return order, wps, anyImproved
 end
 
 -----------------------------------
