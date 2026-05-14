@@ -20,22 +20,6 @@ local Routes = LibStub("AceAddon-3.0"):GetAddon("Routes")
 local CETSP = {}
 Routes.CETSP = CETSP
 
---------------------------------
--- Background execution
-
-local nextYield = 0
-local function yield()
-	local t = debugprofilestop()
-	if t > nextYield then
-		nextYield = t + 30
-		coroutine.yield()
-	elseif t < nextYield then
-		-- Someone called debugprofilestart(), we need to reset our timer, yield anyway
-		nextYield = t + 30
-		coroutine.yield()
-	end
-end
-
 -----------------------------------------------------
 -- Coroutine code to allow background pathing
 
@@ -104,6 +88,24 @@ end
 function CETSP:SetStatusFunction(func)
 	assert(type(func) == "function", "SetStatusFunction() expected function in 1st argument, got "..type(func).." instead.")
 	CETSPUpdateFrame.statusFunc = func
+end
+
+--------------------------------
+-- Background execution
+
+local nextYield = 0
+local function yield()
+	if not CETSPUpdateFrame.running then return end
+
+	local t = debugprofilestop()
+	if t > nextYield then
+		nextYield = t + 30
+		coroutine.yield()
+	elseif t < nextYield then
+		-- Someone called debugprofilestart(), we need to reset our timer, yield anyway
+		nextYield = t + 30
+		coroutine.yield()
+	end
 end
 
 ---------------------------------
@@ -680,6 +682,8 @@ local function twoOpt(order, wps, zones, taboos)
 	local iters = 0
 
 	while improved and iters < 40 do
+		print("[CETSP] 2-opt iteration " .. iters)
+
 		improved = false
 		iters = iters + 1
 
@@ -704,6 +708,8 @@ local function twoOpt(order, wps, zones, taboos)
 						improved = true
 					end
 				end
+
+				yield()
 			end
 		end
 	end
@@ -733,6 +739,8 @@ local function reinsert(order, wps, zones, taboos)
 					return newOrder, newWps, true
 				end
 			end
+
+			yield()
 		end
 	end
 
@@ -831,21 +839,21 @@ function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, p
 	end
 
 	-- Build nearest neighbor tour
-	if nonblocking then yield() end
+	yield()
 	local order = buildNNTour(steinerZones)
 	local wps = optimizeWaypoints(order, steinerZones, parameters.maxPasses or 10)
 	local initLen = wpsTourLen(wps, cetspTaboos)
 	print("[CETSP] Built NN tour with length " .. string.format("%.2f", initLen))
 
 	-- 2-opt improvement
-	if nonblocking then yield() end
+	yield()
 	local beforeOpt = wpsTourLen(wps, cetspTaboos)
 	order, wps = twoOpt(order, wps, steinerZones, cetspTaboos)
 	local afterOpt = wpsTourLen(wps, cetspTaboos)
 	print("[CETSP] 2-opt: " .. string.format("%.2f", beforeOpt) .. " -> " .. string.format("%.2f", afterOpt))
 
 	-- Reinsertion VNS
-	if nonblocking then yield() end
+	yield()
 	local maxVNS = parameters.maxVNS or 20
 	local vnsIters = 0
 	for i = 1, maxVNS do
@@ -860,7 +868,7 @@ function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, p
 			print("[CETSP] VNS converged at iteration " .. i)
 			break
 		end
-		if nonblocking then yield() end
+		yield()
 	end
 
 	-- Final optimization
