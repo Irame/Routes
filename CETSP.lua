@@ -43,13 +43,13 @@ local CETSPUpdateFrame = CreateFrame("Frame")
 CETSPUpdateFrame.running = false
 
 function CETSPUpdateFrame:OnUpdate(elapsed)
-	local status, path, shortestPathLength, count, timetaken = coroutine.resume(self.co)
+	local status, path, meta, shortestPathLength, count, timetaken = coroutine.resume(self.co)
 	if status then
 		if coroutine.status(self.co) == "dead" then
 			-- Function finished, return results
 			self:SetScript("OnUpdate", nil)
 			self.running = false
-			self.finishFunc(path, nil, shortestPathLength, count, timetaken)
+			self.finishFunc(path, meta, shortestPathLength, count, timetaken)
 			self.finishFunc = nil
 			self.statusFunc = nil
 			self.co = nil
@@ -73,13 +73,13 @@ function CETSP:IsCETSPRunning()
 end
 
 -- Same arguments as CETSP:SolveCETSP(), without the "nonblocking" argument
-function CETSP:SolveCETSPBackground(nodes, radius, taboos, zoneID, parameters, path)
+function CETSP:SolveCETSPBackground(nodes, meta, radius, taboos, zoneID, parameters, path)
 	if not CETSPUpdateFrame.running then
 		CETSPUpdateFrame.co = coroutine.create(CETSP.SolveCETSP)
 		CETSPUpdateFrame:SetScript("OnUpdate", CETSPUpdateFrame.OnUpdate)
 		CETSPUpdateFrame.running = true
 		CETSPUpdateFrame.nodes = nodes
-		local status = coroutine.resume(CETSPUpdateFrame.co, CETSP, nodes, radius, taboos, zoneID, parameters, path, true)
+		local status = coroutine.resume(CETSPUpdateFrame.co, CETSP, nodes, meta, radius, taboos, zoneID, parameters, path, true)
 		if status then
 			-- Do nothing, path isn't complete because at least 1 yield() is called.
 			return 1
@@ -761,13 +761,14 @@ end
 --   timeTaken   - Number of seconds used.
 -- Notes: A new nodes[] and metadata[] table is returned. The original tables
 --        sent in are unmodified.
-function CETSP:SolveCETSP(nodes, radius, taboos, zoneID, parameters, path, nonblocking)
+function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, path, nonblocking)
 	-- Notes: Some of these code might look convoluted, with seemingly unnecessary use of too many locals
 	-- and make the code look longer. But they are for speed optimization.
 	assert(type(nodes) == "table", "SolveCETSP() expected table in 1st argument, got "..type(nodes).." instead.")
-	assert(type(radius) == "number", "SolveCETSP() expected number in 2nd argument, got "..type(radius).." instead.")
-	assert(type(taboos) == "table", "SolveCETSP() expected table in 3rd argument, got "..type(taboos).." instead.")
-	assert(type(parameters) == "table", "SolveCETSP() expected table in 5th argument, got "..type(parameters).." instead.")
+	assert(not metadata or type(metadata) == "table", "SolveCETSP() expected table in 2nd argument, got "..type(metadata).." instead.")
+	assert(type(radius) == "number", "SolveCETSP() expected number in 3rd argument, got "..type(radius).." instead.")
+	assert(type(taboos) == "table", "SolveCETSP() expected table in 4th argument, got "..type(taboos).." instead.")
+	assert(type(parameters) == "table", "SolveCETSP() expected table in 6th argument, got "..type(parameters).." instead.")
 	if type(path) == "table" then
 		wipe(path)
 	else
@@ -785,6 +786,17 @@ function CETSP:SolveCETSP(nodes, radius, taboos, zoneID, parameters, path, nonbl
 		startTime = GetTime()
 	else
 		startTime = debugprofilestop()
+	end
+
+	if metadata then
+		nodes = {}
+		local num = 0
+		for i = 1, #metadata do
+			for j = 1, #metadata[i] do
+				num = num+1
+				nodes[num] = metadata[i][j]
+			end
+		end
 	end
 
 	local cetspNodes = {}
@@ -862,7 +874,8 @@ function CETSP:SolveCETSP(nodes, radius, taboos, zoneID, parameters, path, nonbl
 		timeTaken = (debugprofilestop() - startTime) / 1000
 	end
 
-	print("[CETSP] Final tour length: " .. string.format("%.2f", tourLen) .. " (" .. string.format("%.3f", timeTaken) .. "s)")			CETSPUpdateFrame.result = {order, wps, steinerZones, tourLen, maxVNS, timeTaken}
+	print("[CETSP] Final tour length: " .. string.format("%.2f", tourLen) .. " (" .. string.format("%.3f", timeTaken) .. "s)")
+	CETSPUpdateFrame.result = {order, wps, steinerZones, tourLen, maxVNS, timeTaken}
 
 	-- Convert segments back to node IDs
 	for _, seg in ipairs(segments) do
@@ -871,7 +884,20 @@ function CETSP:SolveCETSP(nodes, radius, taboos, zoneID, parameters, path, nonbl
 		tinsert(path, Routes:getID(x, y))
 	end
 
-	return path, tourLen, vnsIters, timeTaken
+	-- Create metadata
+	local metadata = {}
+	for i, zoneIdx in ipairs(order) do
+		local zone = steinerZones[zoneIdx]
+
+		local cluster = {}
+		for _, nodeIdx in ipairs(zone.nodeIdxs) do
+			local nodeID = nodes[nodeIdx]
+			tinsert(cluster, nodeID)
+		end
+		tinsert(metadata, cluster)
+	end
+
+	return path, metadata, tourLen, vnsIters, timeTaken
 end
 
 -- vim: ts=4 noexpandtab

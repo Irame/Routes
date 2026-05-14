@@ -2041,11 +2041,10 @@ function ConfigHandler:DoForeground(info)
 		end
 	end
 
-	local output, meta, orig_route, length, iter, timetaken
+	local output, meta, length, iter, timetaken
 	if algorithm == "CETSP" then
 		local radius = t.cetsp_radius or db.defaults.cetsp_radius or 32
-		orig_route = t.orig_route or t.route
-		output, length, iter, timetaken = Routes.CETSP:SolveCETSP(orig_route, radius, taboos, zone, db.defaults.cetsp)
+		output, meta, length, iter, timetaken = Routes.CETSP:SolveCETSP(t.route, t.metadata, radius, taboos, zone, db.defaults.cetsp)
 	else
 		output, meta, length, iter, timetaken = Routes.TSP:SolveTSP(t.route, t.metadata, taboos, zone, db.defaults.tsp)
 	end
@@ -2053,7 +2052,6 @@ function ConfigHandler:DoForeground(info)
 	t.route = output
 	t.length = length
 	t.metadata = meta
-	t.orig_route = orig_route
 	Routes:Print(L["Path with %d nodes found with length %.2f yards after %d iterations in %.2f seconds."]:format(#output, length, iter, timetaken))
 
 	-- redraw lines
@@ -2085,11 +2083,8 @@ function ConfigHandler:DoBackground(info)
 	local running, errormsg
 	if algorithm == "CETSP" then
 		local radius = t.cetsp_radius or db.defaults.cetsp_radius or 32
-		t.orig_route = t.orig_route or t.route
-		t.metadata = nil
-		running, errormsg = Routes.CETSP:SolveCETSPBackground(t.orig_route, radius, taboos, zone, db.defaults.cetsp)
+		running, errormsg = Routes.CETSP:SolveCETSPBackground(t.route, t.metadata, radius, taboos, zone, db.defaults.cetsp)
 	else
-		t.orig_route = nil
 		running, errormsg = Routes.TSP:SolveTSPBackground(t.route, t.metadata, taboos, zone, db.defaults.tsp)
 	end
 	if (running == 1) then
