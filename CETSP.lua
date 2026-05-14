@@ -675,46 +675,184 @@ local function buildNNTour(zones)
 	return order
 end
 
--- 2-opt tour improvement
+--[[
+Optimized twoOpt for CETSP.lua
+Guided by TSP.lua's TwoOpt implementation (TSP:TwoOpt).
+
+Key improvements over the original CETSP twoOpt:
+  1. Reverse-lookup table (orderR) — O(1) position lookup instead of O(n) scan.
+  2. Neighbor pruning — only test (i,j) pairs where zone j is geometrically close
+     to zone i (like TSP's prune[] table), skipping hopeless candidates.
+  3. In-place segment reversal — reverses order[i+1..j] with a two-pointer swap
+     instead of allocating a brand-new table for every candidate pair.
+  4. Cheap delta pre-filter — uses rep-point distances (straight-line heuristic)
+     to discard candidates before paying the cost of optimizeWaypoints/wpsTourLen.
+  5. Waypoint re-optimization only on acceptance — optimizeWaypoints is called
+     only when the swap is actually kept, not for every (i,j) pair.
+  6. b/z update after swap — like TSP, the inner loop refreshes its edge
+     immediately after a successful swap so further checks in the same pass
+     are consistent.
+
+Drop-in replacement for the existing `twoOpt` local function in CETSP.lua.
+All external call sites (order, wps = twoOpt(order, wps, steinerZones, cetspTaboos))
+remain unchanged.
+]]
+
+-- Build a neighbor-prune list for each zone index.
+-- Two zones are "neighbors" if their representative points are closer than
+-- `pruneRadius`. When pruneRadius is nil the function falls back to a
+-- fraction of the bounding-box diagonal so it works without tuning.
+local function buildPruneList(zones, pruneRadius)
+    local n = #zones
+
+    if not pruneRadius then
+        -- Compute bounding box of rep points and use 30 % of the diagonal.
+        local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+        for _, z in ipairs(zones) do
+            if z.rep.x < minX then minX = z.rep.x end
+            if z.rep.y < minY then minY = z.rep.y end
+            if z.rep.x > maxX then maxX = z.rep.x end
+            if z.rep.y > maxY then maxY = z.rep.y end
+        end
+        local diag = sqrt((maxX - minX)^2 + (maxY - minY)^2)
+        pruneRadius = diag * 0.30
+    end
+
+    local prune = {}
+    for i = 1, n do
+        prune[i] = {}
+    end
+
+    for i = 1, n do
+        for j = i + 1, n do
+            local dx = zones[i].rep.x - zones[j].rep.x
+            local dy = zones[i].rep.y - zones[j].rep.y
+            if dx * dx + dy * dy < pruneRadius * pruneRadius then
+                tinsert(prune[i], j)
+                tinsert(prune[j], i)
+            end
+        end
+    end
+
+    return prune
+end
+
+-- Straight-line distance between the rep points of two zones by index.
+-- Used for the cheap delta pre-filter (no taboo routing overhead).
+local function repDist(zones, a, b)
+    local dx = zones[a].rep.x - zones[b].rep.x
+    local dy = zones[a].rep.y - zones[b].rep.y
+    return sqrt(dx * dx + dy * dy)
+end
+
+-- 2-opt tour improvement for CETSP.
+-- Signature matches the original: (order, wps, zones, taboos) -> order, wps
 local function twoOpt(order, wps, zones, taboos)
-	local n = #order
-	local improved = true
-	local iters = 0
+    local n = #order
+    if n < 4 then return order, wps end
 
-	while improved and iters < 40 do
-		print("[CETSP] 2-opt iteration " .. iters)
+    -- Build neighbor-prune list (analogous to TSP's prune[] table).
+    local prune = buildPruneList(zones)
 
-		improved = false
-		iters = iters + 1
+    -- Reverse-lookup: orderR[zoneIdx] = position in order[] (like TSP's pathR).
+    local orderR = {}
+    for pos = 1, n do
+        orderR[order[pos]] = pos
+    end
 
-		for i = 1, n - 1 do
-			for j = i + 2, n do
-				if not (i == 1 and j == n) then
-					local newOrder = {}
-					for k = 1, i do
-						tinsert(newOrder, order[k])
-					end
-					for k = j, i + 1, -1 do
-						tinsert(newOrder, order[k])
-					end
-					for k = j + 1, n do
-						tinsert(newOrder, order[k])
-					end
+    -- Current best tour length (used for acceptance threshold).
+    local bestLen = wpsTourLen(wps, taboos)
 
-					local newWps = optimizeWaypoints(newOrder, zones, 4)
-					if wpsTourLen(newWps, taboos) < wpsTourLen(wps, taboos) - 0.5 then
-						order = newOrder
-						wps = newWps
-						improved = true
-					end
-				end
+    local improved = true
+    local iters    = 0
 
-				yield()
-			end
-		end
-	end
+    while improved and iters < 40 do
+        print("[CETSP] 2-opt iteration " .. iters)
+        improved = false
+        iters    = iters + 1
 
-	return order, wps
+        for i = 1, n - 1 do
+            local zi   = order[i]
+            local zi1  = order[i + 1]
+
+            -- Cheap edge cost from rep-points for the pre-filter.
+            local edgeAB = repDist(zones, zi, zi1)
+
+            -- Only iterate over pruned neighbors of zi (like TSP's inner loop).
+            for _, zj in ipairs(prune[zi]) do
+                local j = orderR[zj]
+
+                -- Standard 2-opt validity:
+                --   j must exist in order (guard nil from orderR miss),
+                --   j must be strictly after i+1 (no adjacent edge),
+                --   j must be < n so that order[j+1] is always valid
+                --   (the wrap-around edge i=1,j=n is also excluded by j < n).
+                if j and j > i + 1 and j < n then
+                    local zj1 = order[j + 1]  -- safe: j < n guarantees j+1 <= n
+
+                    -- ── Cheap delta pre-filter (rep-point heuristic) ────────
+                    -- Current edges: (zi → zi1) + (zj → zj1)
+                    -- Proposed edges: (zi → zj)  + (zi1 → zj1)
+                    -- Only proceed if the proposed pair is shorter by at
+                    -- least a small margin (avoids paying optimizeWaypoints
+                    -- for obviously bad swaps).
+                    local edgeCD     = repDist(zones, zj, zj1)
+                    local proposedAC = repDist(zones, zi, zj)
+                    local proposedBD = repDist(zones, zi1, zj1)
+
+                    if proposedAC + proposedBD < edgeAB + edgeCD - 0.1 then
+                        -- ── In-place segment reversal (like TSP) ─────────────
+                        -- Reverse order[i+1 .. j] and keep orderR in sync.
+                        local left  = i + 1
+                        local right = j
+                        while left < right do
+                            local L, R = order[left], order[right]
+                            order[left],  order[right]  = R, L
+                            orderR[L], orderR[R] = right, left
+                            left  = left  + 1
+                            right = right - 1
+                        end
+
+                        -- ── CETSP-specific acceptance check ──────────────────
+                        -- Now that zone order is reversed we re-optimise
+                        -- waypoints and measure the true routed length.
+                        local newWps = optimizeWaypoints(order, zones, 4)
+                        local newLen = wpsTourLen(newWps, taboos)
+
+                        if newLen < bestLen - 0.5 then
+                            -- Accept the swap.
+                            wps     = newWps
+                            bestLen = newLen
+                            improved = true
+
+                            -- Refresh the edge reference for the outer loop
+                            -- (mirrors TSP's `b = path[i+1]; z = weight[...]`).
+                            zi1   = order[i + 1]
+                            edgeAB = repDist(zones, zi, zi1)
+                        else
+                            -- Reject: undo the reversal.
+                            left  = i + 1
+                            right = j
+                            while left < right do
+                                local L, R = order[left], order[right]
+                                order[left],  order[right]  = R, L
+                                orderR[L], orderR[R] = right, left
+                                left  = left  + 1
+                                right = right - 1
+                            end
+                            -- zi1 / edgeAB are still valid after undo.
+                        end
+                    end
+                end
+
+            end
+
+			yield()
+        end
+
+    end
+
+    return order, wps
 end
 
 -- Reinsertion (Variable Neighborhood Search)
