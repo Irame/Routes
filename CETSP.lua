@@ -27,13 +27,13 @@ local CETSPUpdateFrame = CreateFrame("Frame")
 CETSPUpdateFrame.running = false
 
 function CETSPUpdateFrame:OnUpdate(elapsed)
-	local status, path, meta, shortestPathLength, count, timetaken = coroutine.resume(self.co)
+	local status, path, meta, shortestPathLength, stageIters, timetaken = coroutine.resume(self.co)
 	if status then
 		if coroutine.status(self.co) == "dead" then
 			-- Function finished, return results
 			self:SetScript("OnUpdate", nil)
 			self.running = false
-			self.finishFunc(path, meta, shortestPathLength, count, timetaken)
+			self.finishFunc(path, meta, shortestPathLength, stageIters, timetaken)
 			self.finishFunc = nil
 			self.statusFunc = nil
 			self.co = nil
@@ -108,6 +108,15 @@ local function yield()
 	end
 end
 
+local function setStatus(stage, passCount, progress, pathLength)
+	if CETSPUpdateFrame.running then
+		if CETSPUpdateFrame.statusFunc then
+			CETSPUpdateFrame.statusFunc(stage, passCount, progress, pathLength)
+		end
+		yield()
+	end
+end
+
 ---------------------------------
 -- Geometry Utilities
 ---------------------------------
@@ -126,14 +135,13 @@ end
 
 -- Ray-casting point-in-polygon test
 local function pointInPolygon(p, poly)
-	local pts = poly.pts
-	local n = #pts
+	local n = #poly
 	local inside = false
 
 	for i = 1, n do
 		local j = (i == 1) and n or (i - 1)
-		local xi, yi = pts[i].x, pts[i].y
-		local xj, yj = pts[j].x, pts[j].y
+		local xi, yi = poly[i].x, poly[i].y
+		local xj, yj = poly[j].x, poly[j].y
 
 		if ((yi > p.y) ~= (yj > p.y)) and
 		   (p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi) then
@@ -160,12 +168,11 @@ end
 
 -- Does segment AB cross any edge of polygon?
 local function segmentCrossesPolygon(ax, ay, bx, by, poly)
-	local pts = poly.pts
-	local n = #pts
+	local n = #poly
 
 	for i = 1, n do
 		local j = (i == n) and 1 or (i + 1)
-		local c, d = pts[i], pts[j]
+		local c, d = poly[i], poly[j]
 		if segmentsIntersect(ax, ay, bx, by, c.x, c.y, d.x, d.y) then
 			return true
 		end
@@ -286,7 +293,7 @@ local function routeSegment(from, to, taboos)
 	local hullSets = {}
 
 	for _, poly in ipairs(taboos) do
-		local hull = convexHull(poly.pts)
+		local hull = convexHull(poly)
 		local expanded = expandPoly(hull, 6)
 		tinsert(hullSets, expanded)
 		for _, v in ipairs(expanded) do
@@ -847,12 +854,12 @@ local function twoOpt(order, wps, zones, taboos)
 
             end
 
-			yield()
+			setStatus(3, iters, i/(n-1), bestLen)
         end
 
     end
 
-    return order, wps
+    return order, wps, iters
 end
 
 --[[
@@ -994,11 +1001,12 @@ local function reinsert(order, wps, zones, taboos)
 
     -- Cache baseline tour length — computed once per pass, not per candidate.
     local bestLen     = wpsTourLen(wps, taboos)
-    local anyImproved = false
 
     -- Outer loop: repeat passes until no improvement found in a full pass.
     local passImproved = true
+	local passCount = 0
     while passImproved do
+		passCount = passCount + 1
         passImproved = false
 
         -- Track the single best move found across the whole pass.
@@ -1047,8 +1055,11 @@ local function reinsert(order, wps, zones, taboos)
                         end
                     end
                 end
+
+				if i % 5 == 0 then
+            		setStatus(4, passCount, ((segLen-1)*n+i)/(3*n))
+				end
             end
-            yield()
         end
 
         -- Apply the best move found in this pass.
@@ -1057,19 +1068,20 @@ local function reinsert(order, wps, zones, taboos)
             wps          = bestNewWps
             bestLen      = bestNewLen
             passImproved = true
-            anyImproved  = true
 
             -- Rebuild reverse-lookup to reflect the new order.
             for pos = 1, n do
                 orderR[order[pos]] = pos
             end
 
+			setStatus(4, passCount, 1, bestLen)
+
             print(string.format("[CETSP] VNS reinsert: new len %.2f (delta %.2f)",
                                 bestLen, bestDelta))
         end
     end
 
-    return order, wps, anyImproved
+    return order, wps, passCount
 end
 
 -----------------------------------
@@ -1149,54 +1161,39 @@ function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, p
 		tinsert(cetspTaboos, cetspTaboo)
 	end
 
+	local stageIters = {}
+	local passCount
+
+	-- Stage 1: Compute Steiner zones
 	local steinerZones = computeSteinerZones(cetspNodes)
 	print("[CETSP] Computed " .. #steinerZones .. " Steiner zones")
-
-	-- Debug: print zone details
-	for i = 1, math.min(3, #steinerZones) do
-		local z = steinerZones[i]
-		print("[CETSP] Zone " .. i .. ": " .. #z.nodeIdxs .. " nodes, rep=(" .. string.format("%.2f", z.rep.x) .. "," .. string.format("%.2f", z.rep.y) .. ")")
-	end
 
 	if #steinerZones == 0 then
 		print("[CETSP] No zones found, returning empty result")
 		return path, 0, 0, 0
 	end
 
-	-- Build nearest neighbor tour
+	-- Stage 2: Build nearest neighbor tour
 	yield()
 	local order = buildNNTour(steinerZones)
 	local wps = optimizeWaypoints(order, steinerZones, parameters.maxPasses or 10)
 	local initLen = wpsTourLen(wps, cetspTaboos)
 	print("[CETSP] Built NN tour with length " .. string.format("%.2f", initLen))
 
-	-- 2-opt improvement
+	-- Stage 3: 2-opt improvement
 	yield()
 	local beforeOpt = wpsTourLen(wps, cetspTaboos)
-	order, wps = twoOpt(order, wps, steinerZones, cetspTaboos)
+	order, wps, passCount = twoOpt(order, wps, steinerZones, cetspTaboos)
+	stageIters[3] = passCount
 	local afterOpt = wpsTourLen(wps, cetspTaboos)
 	print("[CETSP] 2-opt: " .. string.format("%.2f", beforeOpt) .. " -> " .. string.format("%.2f", afterOpt))
 
-	-- Reinsertion VNS
+	-- Stage 4: Reinsertion VNS
 	yield()
-	local maxVNS = parameters.maxVNS or 20
-	local vnsIters = 0
-	for i = 1, maxVNS do
-		local newOrder, newWps, improved = reinsert(order, wps, steinerZones, cetspTaboos)
-		order = newOrder
-		wps = newWps
-		if improved then
-			vnsIters = i
-			local len = wpsTourLen(wps, cetspTaboos)
-			print("[CETSP] VNS iter " .. i .. ": " .. string.format("%.2f", len))
-		else
-			print("[CETSP] VNS converged at iteration " .. i)
-			break
-		end
-		yield()
-	end
+	order, wps, passCount = reinsert(order, wps, steinerZones, cetspTaboos)
+	stageIters[4] = passCount
 
-	-- Final optimization
+	-- Stage 5: Final optimization
 	wps = optimizeWaypoints(order, steinerZones, parameters.maxPasses or 10)
 	local segments = buildRoutedPath(wps, cetspTaboos)
 	local tourLen = routedTourLen(segments)
@@ -1208,7 +1205,6 @@ function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, p
 	end
 
 	print("[CETSP] Final tour length: " .. string.format("%.2f", tourLen) .. " (" .. string.format("%.3f", timeTaken) .. "s)")
-	CETSPUpdateFrame.result = {order, wps, steinerZones, tourLen, maxVNS, timeTaken}
 
 	-- Convert segments back to node IDs
 	for _, seg in ipairs(segments) do
@@ -1230,7 +1226,7 @@ function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, p
 		tinsert(metadata, cluster)
 	end
 
-	return path, metadata, tourLen, vnsIters, timeTaken
+	return path, metadata, tourLen, stageIters, timeTaken
 end
 
 -- vim: ts=4 noexpandtab

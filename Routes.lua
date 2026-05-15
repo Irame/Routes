@@ -2067,12 +2067,6 @@ function ConfigHandler:DoBackground(info)
 	local zone = tonumber(info[2])
 	local route = Routes.routekeys[zone][ info[3] ]
 	local t = db.routes[zone][route]
-	local algorithm = t.opt_algorithm or "TSP"
-
-	if #t.route > 724 then
-		Routes:Print(L["TOO_MANY_NODES_ERROR"])
-		return
-	end
 
 	local taboos = {}
 	for tabooname, used in pairs(t.taboos) do
@@ -2080,18 +2074,29 @@ function ConfigHandler:DoBackground(info)
 			tinsert(taboos, db.taboo[zone][tabooname])
 		end
 	end
-	local running, errormsg
+
+	local algorithm = t.opt_algorithm or "TSP"
 	if algorithm == "CETSP" then
-		local radius = t.cetsp_radius or db.defaults.cetsp_radius or 32
-		running, errormsg = Routes.CETSP:SolveCETSPBackground(t.route, t.metadata, radius, taboos, zone, db.defaults.cetsp)
+		self:DoBackgroundCETSP(zone, route, taboos)
 	else
-		running, errormsg = Routes.TSP:SolveTSPBackground(t.route, t.metadata, taboos, zone, db.defaults.tsp)
+		self:DoBackgroundTSP(zone, route, taboos)
 	end
+end
+
+function ConfigHandler:DoBackgroundTSP(zone, route, taboos)
+	local t = db.routes[zone][route]
+
+	if #t.route > 724 then
+		Routes:Print(L["TOO_MANY_NODES_ERROR"])
+		return
+	end
+
+	local running, errormsg = Routes.TSP:SolveTSPBackground(t.route, t.metadata, taboos, zone, db.defaults.tsp)
+
 	if (running == 1) then
 		Routes:Print(L["Now running TSP in the background..."])
-		local algoObj = algorithm == "CETSP" and Routes.CETSP or Routes.TSP
 		local dispLength;
-		algoObj:SetStatusFunction(function(pass, progress, length)
+		Routes.TSP:SetStatusFunction(function(pass, progress, length)
 			local frame = LibStub("AceConfigDialog-3.0").OpenFrames["Routes"]
 			if frame then
 				if length then
@@ -2104,7 +2109,7 @@ function ConfigHandler:DoBackground(info)
 				end
 			end
 		end)
-		algoObj:SetFinishFunction(function(output, meta, length, iter, timetaken)
+		Routes.TSP:SetFinishFunction(function(output, meta, length, iter, timetaken)
 			t.route = output
 			t.length = length
 			t.metadata = meta
@@ -2124,6 +2129,74 @@ function ConfigHandler:DoBackground(info)
 		end)
 	elseif (running == 2) then
 		Routes:Print(L["There is already a TSP running in background. Wait for it to complete first."])
+	elseif (running == 3) then
+		-- This should never happen, but is here as a fallback
+		Routes:Print(L["The following error occured in the background path generation coroutine, please report to Grum or Xinhuan:"]);
+		Routes:Print(errormsg);
+	end
+end
+
+function ConfigHandler:DoBackgroundCETSP(zone, route, taboos)
+	local t = db.routes[zone][route]
+
+	if #t.route > 724 then
+		Routes:Print(L["TOO_MANY_NODES_ERROR"])
+		return
+	end
+
+	local radius = t.cetsp_radius or db.defaults.cetsp_radius or 32
+	local running, errormsg = Routes.CETSP:SolveCETSPBackground(t.route, t.metadata, radius, taboos, zone, db.defaults.cetsp)
+
+	if (running == 1) then
+		Routes:Print(L["Now running CETSP in the background..."])
+		local dispLength;
+		Routes.CETSP:SetStatusFunction(function(stage, pass, progress, length)
+			local frame = LibStub("AceConfigDialog-3.0").OpenFrames["Routes"]
+			if frame then
+				if length then
+					dispLength = length
+				end
+				if dispLength then
+					frame:SetStatusText(L["Stage %d - Pass %d: %d%% - %d yards"]:format(stage, pass, progress*100, dispLength))
+				else
+					frame:SetStatusText(L["Stage %d - Pass %d: %d%%"]:format(stage, pass, progress*100))
+				end
+			end
+		end)
+		Routes.CETSP:SetFinishFunction(function(output, meta, length, stageIter, timetaken)
+			t.route = output
+			t.length = length
+			t.metadata = meta
+
+			local stageIterStr = ""
+			for i = 1, 5 do
+				if stageIter[i] then
+					if stageIterStr ~= "" then
+						stageIterStr = stageIterStr .. ", "
+					end
+					stageIterStr = stageIterStr .. ("S%d: %d"):format(i, iter)
+				end
+			end
+
+			local msg = L["Path with %d nodes found with length %.2f yards in %.2f seconds."]:format(#output, length, timetaken)
+			if stageIterStr ~= "" then
+				msg = msg .. (" (%s)"):format(stageIterStr);
+			end
+			Routes:Print(msg)
+			local frame = LibStub("AceConfigDialog-3.0").OpenFrames["Routes"]
+			if frame then
+				frame:SetStatusText(msg)
+			end
+			-- redraw lines
+			local AutoShow = Routes:GetModule("AutoShow", true)
+			if AutoShow and db.defaults.use_auto_showhide then
+				AutoShow:ApplyVisibility()
+			end
+			Routes:DrawWorldmapLines()
+			Routes:DrawMinimapLines(true)
+		end)
+	elseif (running == 2) then
+		Routes:Print(L["There is already a TSP/CETSP running in background. Wait for it to complete first."])
 	elseif (running == 3) then
 		-- This should never happen, but is here as a fallback
 		Routes:Print(L["The following error occured in the background path generation coroutine, please report to Grum or Xinhuan:"]);
@@ -2402,8 +2475,8 @@ do
 						name = L["Uncluster"], type = "execute",
 						desc = L["Uncluster this route"],
 						func = "UnClusterRoute",
-						hidden = "IsNotCluster",
-						disabled = "IsNotCluster",
+						hidden = function(info) return ConfigHandler:IsNotCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
+						disabled = function(info) return ConfigHandler:IsNotCluster(info) or ConfigHandler:IsCETSPSelected(info) end,
 						order = 80,
 					},
 					optimize_header = {
