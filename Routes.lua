@@ -818,6 +818,14 @@ function Routes:InsertNode(zone, coord, node_name)
 	end
 end
 
+function Routes:IsSolverRunning()
+	local running, nodes = self.TSP:IsTSPRunning()
+	if running then return running, nodes end
+
+	local running, nodes = self.CETSP:IsCETSPRunning()
+	if running then return running, nodes end
+end
+
 -- Accepts a zone name, coord and node_name
 -- for deleting into relevant routes
 -- Zone name must be localized, node_name can be english or localized
@@ -1760,7 +1768,7 @@ function ConfigHandler:DeleteRoute(info)
 	local zoneKey = info[2]
 	local routekey = info[3]
 	local route = Routes.routekeys[zone][routekey]
-	local is_running, route_table = Routes.TSP:IsTSPRunning()
+	local is_running, route_table = Routes:IsSolverRunning()
 	if is_running and route_table == db.routes[zone][route].route then
 		Routes:Print(L["You may not delete a route that is being optimized in the background."])
 		return
@@ -1782,7 +1790,7 @@ function ConfigHandler:RecreateRoute(info)
 	local zone = tonumber(info[2])
 	local routekey = info[3]
 	local route = Routes.routekeys[zone][routekey]
-	local is_running, route_table = Routes.TSP:IsTSPRunning()
+	local is_running, route_table = Routes:IsSolverRunning()
 	if is_running and route_table == db.routes[zone][route].route then
 		Routes:Print(L["You may not delete a route that is being optimized in the background."])
 		return
@@ -3301,7 +3309,7 @@ do
 		end
 		local copy_of_taboo_data = {route = {}, nodes = {}, fakenodes = {}}
 		if info[1] == "routes_group" then
-			local is_running, route_table = Routes.TSP:IsTSPRunning()
+			local is_running, route_table = Routes:IsSolverRunning()
 			if is_running and route_table == taboo_data.route then return end
 			if ConfigHandler:IsCluster(info) then return end
 			copy_of_taboo_data.isroute = true
@@ -3630,7 +3638,7 @@ do
 		local route = Routes.routekeys[zone][ info[3] ]
 		local route_table = db.routes[zone][route]
 		if taboo_edit_list[route_table] then return true end
-		local is_running, route_table2 = Routes.TSP:IsTSPRunning()
+		local is_running, route_table2 = Routes:IsSolverRunning()
 		if is_running and route_table2 == route_table.route then
 			return true
 		end
