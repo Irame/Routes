@@ -142,6 +142,7 @@ local defaults = {
 			line_gaps_skip_cluster = true,
 			cluster_dist = 60,
 			cetsp_radius = 32,
+			draw_cetsp_zones = false,
 			callbacks = {
 				['*'] = true
 			}
@@ -402,6 +403,73 @@ local XY_cache_mt = {
 
 setmetatable( X_cache, XY_cache_mt )
 setmetatable( Y_cache, XY_cache_mt )
+
+function Routes:DrawCETSPZones(frame, route_data, zoneID, getXY, toPixelRadius, width, color)
+    if not db.defaults.draw_cetsp_zones then return end
+    if not route_data.metadata then return end
+
+    local defaults = db.defaults
+    local zone_color = {
+        color[1],
+        color[2],
+        color[3],
+        (color[4] or 1) * 0.4,
+    }
+    local zone_width = width * 0.5
+    local radius_px  = toPixelRadius(route_data.cetsp_radius or defaults.cetsp_radius)
+
+    for cluster_idx = 1, #route_data.metadata do
+        local rep_point = route_data.route[cluster_idx]
+        if rep_point and rep_point ~= defaults.fake_point then
+            local rep_sx, rep_sy, rep_visible = getXY(rep_point)
+
+            local cluster = route_data.metadata[cluster_idx]
+            for node_idx = 1, #cluster do
+                local node_point = cluster[node_idx]
+                if node_point and node_point ~= defaults.fake_point then
+                    local node_sx, node_sy, node_visible = getXY(node_point)
+
+                    if node_visible then
+                        G:DrawCircle(frame, node_sx, node_sy, radius_px,
+                                     zone_color, zone_width, "ARTWORK")
+                    end
+
+                    if node_visible or rep_visible then
+                        G:DrawLine(frame, node_sx, node_sy, rep_sx, rep_sy,
+                                   zone_width, zone_color, "ARTWORK")
+                    end
+                end
+            end
+        end
+    end
+end
+
+function Routes:DrawCETSPZonesMinimap(route_data, currentZoneID, cx, cy, minX, minY,
+                                       scale_x, scale_y, minimap_h, minimap_rotate,
+                                       cos, sin, radius, minimapScale)
+    local defaults = db.defaults
+    local vis_radius = radius * 1.5
+
+    local function getXY(point)
+        local key = format("%s;%s", currentZoneID, point)
+        local wx, wy = X_cache[key], Y_cache[key]
+        if minimap_rotate then
+            local dx, dy = wx - cx, wy - cy
+            wx = cx + dx * cos - dy * sin
+            wy = cy + dx * sin + dy * cos
+        end
+        local sx = (wx - minX) * scale_x
+        local sy = minimap_h - (wy - minY) * scale_y
+        return sx, sy, is_inside(wx, wy, cx, cy, vis_radius)
+    end
+
+    Routes:DrawCETSPZones(
+        Minimap, route_data, currentZoneID,
+        getXY,
+        function(yards) return yards * scale_x end,
+        (route_data.width_minimap or defaults.width_minimap) / minimapScale,
+        route_data.color or defaults.color)
+end
 
 function Routes:DrawMinimapLines(forceUpdate)
 	if not db.defaults.draw_minimap then
@@ -772,6 +840,12 @@ function Routes:DrawMinimapLines(forceUpdate)
 					last_y = cur_y
 					last_inside = cur_inside
 				end
+
+				self:DrawCETSPZonesMinimap(
+					route_data, currentZoneID, cx, cy, minX, minY,
+					scale_x, scale_y, minimap_h, minimap_rotate,
+					cos, sin, radius, minimapScale
+				)
 			end
 		end
 	end
@@ -1193,6 +1267,19 @@ function RoutesPinMixin:DrawLines()
 					end
 					last_point = point
 				end
+
+				Routes:DrawCETSPZones(
+                    self, route_data, uiMapID,
+                    function(point)
+                        local x = floor(point / 10000) / 10000
+                        local y = 1 - (point % 10000) / 10000
+                        return x * fw, y * fh, true  -- world map has no clipping
+                    end,
+                    function(yards)
+                        local zoneW = Routes.Dragons:GetZoneSize(uiMapID)
+                        return (yards / zoneW) * fw / canvasScale
+                    end,
+                    width, color)
 			end
 		end
 	end
@@ -1668,6 +1755,12 @@ options.args.options_group.args = {
 				min = 0, max = 10, step = 0.1,
 				arg = "update_distance",
 				order = 500,
+			},
+			cetsp_zones = {
+				name = L["Draw CETSP zones"], type = "toggle",
+				desc = L["Draw circles around grouped nodes in CETSP clustered routes"],
+				arg  = "draw_cetsp_zones",
+				order = 550,
 			},
 		},
 	},
@@ -3912,6 +4005,25 @@ function G:HideLines(C)
 			C.Routes_Lines_Used[i]:Hide()
 			tinsert(C.Routes_Lines,tremove(C.Routes_Lines_Used))
 		end
+	end
+end
+
+-- Draw a circle on the map
+function G:DrawCircle(C, centerX, centerY, radius, color, width, layer)
+	local segments = 24  -- number of line segments to form the circle
+	local lastX, lastY
+
+	for i = 0, segments do
+		local angle = (i / segments) * math.pi * 2
+		local x = centerX + radius * math.cos(angle)
+		local y = centerY + radius * math.sin(angle)
+
+		if lastX and lastY then
+			G:DrawLine(C, lastX, lastY, x, y, width, color, layer)
+		end
+
+		lastX = x
+		lastY = y
 	end
 end
 
