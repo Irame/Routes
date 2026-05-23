@@ -1343,6 +1343,17 @@ function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
 			tinsert(nodes, Routes:getID(x, y))
 		end
 
+		-- Reorder metadata to match the tour order so metadata[i] always
+		-- corresponds to nodes[i] after localTwoOpt may have permuted order[].
+		local reorderedMeta = {}
+		for _, zoneIdx in ipairs(order) do
+			reorderedMeta[#reorderedMeta + 1] = metadata[zoneIdx]
+		end
+		wipe(metadata)
+		for _, cluster in ipairs(reorderedMeta) do
+			metadata[#metadata + 1] = cluster
+		end
+
 		return tourLen
 	end
 
@@ -1550,7 +1561,7 @@ function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
 
 				for pos = 1, nTemp + 1 do
 					local prevIdx = (pos - 2) % nTemp + 1
-					local nextIdx = pos % nTemp + 1
+					local nextIdx = (pos - 1) % nTemp + 1
 					local prevRep = tempZones[prevIdx].rep
 					local nextRep = tempZones[nextIdx].rep
 
@@ -1611,7 +1622,7 @@ function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
 
 			for pos = 1, n + 1 do
 				local prevIdx = (pos - 2) % n + 1
-				local nextIdx = pos % n + 1
+				local nextIdx = (pos - 1) % n + 1
 				local prevRep = existingZones[prevIdx].rep
 				local nextRep = existingZones[nextIdx].rep
 
