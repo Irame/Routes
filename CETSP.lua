@@ -14,7 +14,7 @@ local ipairs, pairs, type = ipairs, pairs, type
 local coroutine = coroutine
 local tinsert, tremove = tinsert, tremove
 local debugprofilestop = debugprofilestop
-local inf = math.huge
+local inf, abs, sqrt = math.huge, math.abs, math.sqrt
 
 local Routes = LibStub("AceAddon-3.0"):GetAddon("Routes")
 local CETSP = {}
@@ -135,6 +135,12 @@ local function dist(a, b)
 	local dx = a.x - b.x
 	local dy = a.y - b.y
 	return sqrt(dx * dx + dy * dy)
+end
+
+local function distSq(a, b)
+	local dx = a.x - b.x
+	local dy = a.y - b.y
+	return dx * dx + dy * dy
 end
 
 -- Check if two circles intersect (including touching)
@@ -676,7 +682,7 @@ local function buildNNTour(zones)
 
 		for i = 1, n do
 			if not visited[i] then
-				local d = dist(zones[last].rep, zones[i].rep)
+				local d = distSq(zones[last].rep, zones[i].rep)
 				if d < bestD then
 					bestD = d
 					best = i
@@ -691,29 +697,6 @@ local function buildNNTour(zones)
 	return order
 end
 
---[[
-Optimized twoOpt for CETSP.lua
-Guided by TSP.lua's TwoOpt implementation (TSP:TwoOpt).
-
-Key improvements over the original CETSP twoOpt:
-  1. Reverse-lookup table (orderR) — O(1) position lookup instead of O(n) scan.
-  2. Neighbor pruning — only test (i,j) pairs where zone j is geometrically close
-     to zone i (like TSP's prune[] table), skipping hopeless candidates.
-  3. In-place segment reversal — reverses order[i+1..j] with a two-pointer swap
-     instead of allocating a brand-new table for every candidate pair.
-  4. Cheap delta pre-filter — uses rep-point distances (straight-line heuristic)
-     to discard candidates before paying the cost of optimizeWaypoints/wpsTourLen.
-  5. Waypoint re-optimization only on acceptance — optimizeWaypoints is called
-     only when the swap is actually kept, not for every (i,j) pair.
-  6. b/z update after swap — like TSP, the inner loop refreshes its edge
-     immediately after a successful swap so further checks in the same pass
-     are consistent.
-
-Drop-in replacement for the existing `twoOpt` local function in CETSP.lua.
-All external call sites (order, wps = twoOpt(order, wps, steinerZones, cetspTaboos))
-remain unchanged.
-]]
-
 -- Build a neighbor-prune list for each zone index.
 -- Two zones are "neighbors" if their representative points are closer than
 -- `pruneRadius`. When pruneRadius is nil the function falls back to a
@@ -723,7 +706,7 @@ local function buildPruneList(zones, pruneRadius)
 
     if not pruneRadius then
         -- Compute bounding box of rep points and use 30 % of the diagonal.
-        local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+        local minX, minY, maxX, maxY = inf, inf, -inf, -inf
         for _, z in ipairs(zones) do
             if z.rep.x < minX then minX = z.rep.x end
             if z.rep.y < minY then minY = z.rep.y end
@@ -761,8 +744,31 @@ local function repDist(zones, a, b)
     return sqrt(dx * dx + dy * dy)
 end
 
--- 2-opt tour improvement for CETSP.
--- Signature matches the original: (order, wps, zones, taboos) -> order, wps
+--[[
+2-opt tour improvement for CETSP.
+
+Standard 2-opt: for every pair of non-adjacent edges (i→i+1) and (j→j+1),
+test whether reversing the segment between them yields a shorter tour. The
+CETSP twist is that waypoints are not fixed coordinates but feasible points
+inside Steiner zones, so the tour length after a swap depends on where those
+waypoints land — requiring a call to optimizeWaypoints before the cost can
+be measured accurately.
+
+To keep that call affordable:
+  - A neighbor-prune list limits the inner loop to zone pairs whose rep-points
+    are within a fraction of the bounding-box diagonal, skipping pairs that
+    are geometrically too far apart to produce an improving swap.
+  - A cheap rep-point delta (straight-line heuristic) screens candidates
+    before optimizeWaypoints is invoked.
+  - optimizeWaypoints is called only when a swap is accepted, never for
+    rejected candidates.
+  - A reverse-lookup table (orderR) gives O(1) position queries instead of
+    a linear scan.
+  - The segment order[i+1..j] is reversed in place and restored on rejection,
+    avoiding per-candidate table allocation.
+
+Iterates until no improving swap is found or the iteration cap is reached.
+]]
 local function twoOpt(order, wps, zones, taboos)
     local n = #order
     if n < 4 then return order, wps end
@@ -871,49 +877,16 @@ local function twoOpt(order, wps, zones, taboos)
     return order, wps, iters
 end
 
---[[
-Optimized reinsert (Reinsertion VNS) for CETSP.lua
-Guided by TSP.lua's TwoOpt / 2.5-opt (TSP:TwoOpt twoPointFiveOpt branch).
-
-Problems with the original reinsert():
-  1. First-improvement exit — returns on the first gain found, forcing the
-     outer VNS loop to restart a full O(n²) scan from scratch each time.
-  2. No pruning — every (i,j) pair is tested regardless of spatial distance.
-  3. Full table allocation per candidate — builds a brand-new newOrder table
-     before any cost check.
-  4. Double wpsTourLen call per candidate — wps baseline is recomputed
-     inside the loop even though it doesn't change between candidates.
-  5. Only single-zone (Or-1) moves — Or-2 and Or-3 segment moves are much
-     stronger for CETSP where adjacent zones are spatially coupled.
-
-What this version does instead (guided by TSP:TwoOpt 2.5-opt branch):
-  1. Best-improvement within each full pass — collects all improving moves,
-     applies the best one per pass, then restarts; never exits early.
-  2. Neighbor pruning (reuses buildPruneList from twoOpt) — only tests
-     insertion targets j that are geometrically close to zone i, mirroring
-     TSP's prune[] table in the 2.5-opt inner loop.
-  3. Reverse-lookup (orderR) — O(1) position queries, same as TSP's pathR.
-  4. Clean remove+insert (applyReinsertion) — two explicit branches
-     (insertAfter < from vs > segEnd) with simple sequential copies;
-     verified correct by unit tests for Or-1/2/3 in both directions.
-  5. Cheap rep-point delta pre-filter — screens out obviously bad moves
-     before paying for optimizeWaypoints / wpsTourLen.
-  6. Or-1, Or-2, Or-3 segment moves — moves chains of 1, 2, or 3 consecutive
-     zones; Or-2/3 extend TSP's 2.5-opt to longer segments.
-  7. Baseline length cached outside all loops — computed once per pass.
-
-Drop-in replacement for the existing `reinsert` local function in CETSP.lua.
-Call site in SolveCETSP is unchanged:
-  local newOrder, newWps, improved = reinsert(order, wps, steinerZones, cetspTaboos)
-
-NOTE: buildPruneList and repDist must be defined before this function.
-      They are already present after the twoOpt optimisation (twoOpt_optimized.lua).
-]]
-
--- Build a new order table by removing the segment [from .. from+segLen-1]
--- and reinserting it after position insertAfter (in the original ordering).
--- Two explicit branches handle leftward vs rightward moves.
--- Verified correct by unit tests for Or-1, Or-2, Or-3 in both directions.
+-- Build a new order by removing the segment [from .. from+segLen-1] and
+-- reinserting it after position insertAfter.
+--
+-- insertAfter < from  →  segment moves left:
+--   [1..insertAfter] [seg] [insertAfter+1..from-1] [segEnd+1..n]
+--
+-- insertAfter > segEnd  →  segment moves right:
+--   [1..from-1] [segEnd+1..insertAfter] [seg] [insertAfter+1..n]
+--
+-- Caller is responsible for ensuring insertAfter is not in [from-1, segEnd].
 local function applyReinsertion(order, from, segLen, insertAfter)
     local n      = #order
     local segEnd = from + segLen - 1
@@ -990,10 +963,28 @@ local function orKDelta(order, zones, from, segLen, insertAfter)
     return added - removed
 end
 
--- Optimized reinsertion VNS.
--- Performs Or-1, Or-2, Or-3 moves with neighbor pruning and best-improvement
--- selection within each pass.
--- Returns: newOrder, newWps, improved (bool)
+--[[
+Or-opt reinsertion improvement for CETSP.
+
+Repeatedly tries to relocate a contiguous segment of 1, 2, or 3 zones
+(Or-1, Or-2, Or-3) to a better position in the tour. Each move removes
+the segment and reinserts it after a different position; the tour is
+accepted if the routed length strictly decreases.
+
+Within each pass the single best move is selected (best-improvement) and
+applied, then the pass restarts. Passes continue until a full scan finds
+nothing to improve.
+
+Computational shortcuts:
+  - A neighbor-prune list restricts insertion targets to zones whose
+    rep-points are spatially close to the segment head, mirroring the
+    pruning used in twoOpt.
+  - A reverse-lookup table (orderR) gives O(1) position queries and is
+    rebuilt after each accepted move.
+  - orKDelta provides a rep-point cost estimate that filters out candidates
+    before the more expensive optimizeWaypoints / wpsTourLen calls.
+  - The baseline tour length is cached per pass, not recomputed per candidate.
+]]
 local function reinsert(order, wps, zones, taboos)
     local n = #order
     if n < 4 then return order, wps, false end
@@ -1222,7 +1213,7 @@ function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, p
 	end
 
 	-- Create metadata
-	local metadata = {}
+	local metadataOut = {}
 	for i, zoneIdx in ipairs(order) do
 		local zone = steinerZones[zoneIdx]
 
@@ -1231,10 +1222,10 @@ function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, p
 			local nodeID = nodes[nodeIdx]
 			tinsert(cluster, nodeID)
 		end
-		tinsert(metadata, cluster)
+		tinsert(metadataOut, cluster)
 	end
 
-	return path, metadata, tourLen, stageIters, timeTaken
+	return path, metadataOut, tourLen, stageIters, timeTaken
 end
 
 -----------------------------------
@@ -1331,9 +1322,11 @@ function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
 	-- Optimize waypoints, route through taboos, compute tour length, then atomically
 	-- rebuild nodes[] from the accepted solution so nodes and metadata stay in sync.
 	-- Returns the routed tour length in yards.
-	local function finalizeZones(zones, order)
-		local finalWps = optimizeWaypoints(order, zones, 8)
-		local segs = buildRoutedPath(finalWps, cetspTaboos)
+	local function finalizeZones(zones, order, wps)
+		if not wps then
+			wps = optimizeWaypoints(order, zones, 8)
+		end
+		local segs = buildRoutedPath(wps, cetspTaboos)
 		local tourLen = routedTourLen(segs)
 
 		wipe(nodes)
@@ -1360,61 +1353,64 @@ function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
 	-- 2-opt pass restricted to edges touching insertedPos and its immediate neighbors.
 	-- Only the edges adjacent to the new zone can benefit from a swap involving it,
 	-- so this covers the useful candidates in O(n) comparisons instead of O(n^2).
-	local function localTwoOpt(zones, order, insertedPos)
+	local function localTwoOpt(zones, order, insertedPos, prune)
 		local n = #order
 		if n < 4 then return order end
 
-		-- An edge index i represents the edge from order[i] to order[i+1 mod n].
-		local function edgeIdx(pos)
-			return ((pos - 1) % n) + 1
-		end
+		-- Build it here if not supplied
+		prune = prune or buildPruneList(zones)
 
-		-- Collect the three edges that touch insertedPos (prev, self, next).
-		local candidates = {}
-		local seen = {}
-		for delta = -1, 1 do
-			local e = edgeIdx(insertedPos + delta)
-			if not seen[e] then
-				seen[e] = true
-				tinsert(candidates, e)
-			end
-		end
+		local orderR = {}
+		for pos = 1, n do orderR[order[pos]] = pos end
 
-		local wps = optimizeWaypoints(order, zones, 4)
+		local wps    = optimizeWaypoints(order, zones, 4)
 		local bestLen = wpsTourLen(wps, cetspTaboos)
 		local improved = true
 
 		while improved do
 			improved = false
-			for _, i in ipairs(candidates) do
-				-- Test swapping candidate edge i with every other non-adjacent edge j.
-				for j = i + 2, n - 1 do
-					-- Cheap rep-point pre-filter before paying for optimizeWaypoints.
-					local zi   = order[i]
-					local zi1  = order[(i % n) + 1]
-					local zj   = order[j]
-					local zj1  = order[(j % n) + 1]
-					local curCost  = repDist(zones, zi, zi1) + repDist(zones, zj, zj1)
-					local propCost = repDist(zones, zi, zj)  + repDist(zones, zi1, zj1)
-					if propCost < curCost - 0.1 then
-						-- Reverse order[i+1..j] in place and test the new tour length.
-						local left, right = i + 1, j
-						while left < right do
-							order[left], order[right] = order[right], order[left]
-							left = left + 1; right = right - 1
-						end
-						local newWps = optimizeWaypoints(order, zones, 4)
-						local newLen = wpsTourLen(newWps, cetspTaboos)
-						if newLen < bestLen - 0.5 then
-							wps     = newWps
-							bestLen = newLen
-							improved = true
-						else
-							-- Reject: undo the reversal.
-							left, right = i + 1, j
+
+			-- Only the three edges touching insertedPos are candidates
+			local function edgeIdx(pos) return ((pos - 1) % n) + 1 end
+			local checked = {}
+			local candidateEdges = {}
+			for delta = -1, 1 do
+				local e = edgeIdx(insertedPos + delta)
+				if not checked[e] then checked[e] = true; candidateEdges[#candidateEdges+1] = e end
+			end
+
+			for _, i in ipairs(candidateEdges) do
+				local zi  = order[i]
+				local zi1 = order[(i % n) + 1]
+				local edgeAB = repDist(zones, zi, zi1)
+
+				for _, zj in ipairs(prune[zi]) do
+					local j = orderR[zj]
+					if j and j > i + 1 and j < n then
+						local zj1 = order[j + 1]
+						local proposedCost = repDist(zones, zi, zj) + repDist(zones, zi1, zj1)
+						if proposedCost < edgeAB + repDist(zones, zj, zj1) - 0.1 then
+							local left, right = i + 1, j
 							while left < right do
-								order[left], order[right] = order[right], order[left]
+								local L, R = order[left], order[right]
+								order[left], order[right] = R, L
+								orderR[L], orderR[R] = right, left
 								left = left + 1; right = right - 1
+							end
+							local newWps = optimizeWaypoints(order, zones, 4)
+							local newLen = wpsTourLen(newWps, cetspTaboos)
+							if newLen < bestLen - 0.5 then
+								wps = newWps; bestLen = newLen; improved = true
+								zi1 = order[(i % n) + 1]
+								edgeAB = repDist(zones, zi, zi1)
+							else
+								left, right = i + 1, j
+								while left < right do
+									local L, R = order[left], order[right]
+									order[left], order[right] = R, L
+									orderR[L], orderR[R] = right, left
+									left = left + 1; right = right - 1
+								end
 							end
 						end
 					end
@@ -1483,12 +1479,13 @@ function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
 				for _, nodeIdx in ipairs(zone.nodeIdxs) do
 					tinsert(zoneNodeIDs, ungroupedNodes[nodeIdx])
 				end
-				table.insert(metadata, zoneIdx + subIdx - 1, zoneNodeIDs)
+				tinsert(metadata, zoneIdx + subIdx - 1, zoneNodeIDs)
 			end
 
 			local zones, order = buildAllZoneStructures()
-			order, _, _ = localTwoOpt(zones, order, zoneIdx)
-			local tourLen = finalizeZones(zones, order)
+			local wps
+			order, wps = localTwoOpt(zones, order, zoneIdx)
+			local tourLen = finalizeZones(zones, order, wps)
 
 			dbgPrintFormat("[CETSP:InsertNode] Ungrouped zone %d -> %d sub-zones; tour=%.2f", zoneIdx, #newSteinerZones, tourLen)
 			return tourLen
@@ -1518,13 +1515,6 @@ function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
 			for i = #overlappingZones, 1, -1 do
 				tremove(metadata, overlappingZones[i])
 			end
-			-- Adjust anchorIdx for the zones that were removed before it.
-			local removedBefore = 0
-			for _, zi in ipairs(overlappingZones) do
-				if zi < anchorIdx then removedBefore = removedBefore + 1 end
-			end
-			anchorIdx = anchorIdx - removedBefore
-			if anchorIdx < 1 then anchorIdx = 1 end
 
 			-- Recompute Steiner zones for the ungrouped pool.
 			local cetspNodes = {}
@@ -1557,7 +1547,7 @@ function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
 
 				local nTemp     = #tempZones
 				local bestPos   = anchorIdx + subIdx - 1  -- seed near the anchor
-				local bestDelta = math.huge
+				local bestDelta = inf
 
 				for pos = 1, nTemp + 1 do
 					local prevIdx = (pos - 2) % nTemp + 1
@@ -1582,7 +1572,7 @@ function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
 					end
 				end
 
-				table.insert(insertedMetadata, bestPos, zoneNodeIDs)
+				tinsert(insertedMetadata, bestPos, zoneNodeIDs)
 			end
 
 			-- All positions decided; atomically replace metadata contents.
@@ -1592,8 +1582,9 @@ function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
 			end
 
 			local zones, order = buildAllZoneStructures()
-			order, _, _ = localTwoOpt(zones, order, anchorIdx)
-			local tourLen = finalizeZones(zones, order)
+			local wps
+			order, wps = localTwoOpt(zones, order, anchorIdx)
+			local tourLen = finalizeZones(zones, order, wps)
 
 			dbgPrintFormat("[CETSP:InsertNode] Merged %d overlapping zones -> %d sub-zones; tour=%.2f", #overlappingZones, #newSteinerZones, tourLen)
 			return tourLen
@@ -1618,7 +1609,7 @@ function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
 
 			local n = #existingZones
 			local bestPos  = n + 1
-			local minDelta = math.huge
+			local minDelta = inf
 
 			for pos = 1, n + 1 do
 				local prevIdx = (pos - 2) % n + 1
@@ -1645,7 +1636,7 @@ function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
 
 			dbgPrintFormat("[CETSP:InsertNode] No-overlap: inserting new zone at position %d (delta=%.2f)", bestPos, minDelta)
 
-			table.insert(metadata, bestPos, {nodeID})
+			tinsert(metadata, bestPos, {nodeID})
 
 			-- Build the full zone list with the new entry included, then run
 			-- bisectWaypoint once to seed the waypoint relative to its neighbors
@@ -1655,10 +1646,11 @@ function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
 			local nextPos = bestPos % #zones + 1
 			local prevWp  = {x = zones[order[prevPos]].rep.x, y = zones[order[prevPos]].rep.y}
 			local nextWp  = {x = zones[order[nextPos]].rep.x, y = zones[order[nextPos]].rep.y}
-			bisectWaypoint(zones[order[bestPos]], prevWp, nextWp)
+			zones[order[bestPos]].rep = bisectWaypoint(zones[order[bestPos]], prevWp, nextWp)
 
-			order, _, _ = localTwoOpt(zones, order, bestPos)
-			local tourLen = finalizeZones(zones, order)
+			local wps
+			order, wps = localTwoOpt(zones, order, bestPos)
+			local tourLen = finalizeZones(zones, order, wps)
 
 			dbgPrintFormat("[CETSP:InsertNode] Created new zone at position %d; tour=%.2f", bestPos, tourLen)
 			return tourLen
