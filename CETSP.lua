@@ -20,6 +20,15 @@ local Routes = LibStub("AceAddon-3.0"):GetAddon("Routes")
 local CETSP = {}
 Routes.CETSP = CETSP
 
+local function dbgPrint(...)
+	-- Uncomment for debug output
+	print(...)
+end
+
+local function dbgPrintFormat(...)
+	dbgPrint(string.format(...))
+end
+
 -----------------------------------------------------
 -- Coroutine code to allow background pathing
 
@@ -774,7 +783,7 @@ local function twoOpt(order, wps, zones, taboos)
     local iters    = 0
 
     while improved and iters < 40 do
-        print("[CETSP] 2-opt iteration " .. iters)
+        dbgPrint("[CETSP] 2-opt iteration " .. iters)
         improved = false
         iters    = iters + 1
 
@@ -1076,8 +1085,7 @@ local function reinsert(order, wps, zones, taboos)
 
 			setStatus(4, passCount, 1, bestLen)
 
-            print(string.format("[CETSP] VNS reinsert: new len %.2f (delta %.2f)",
-                                bestLen, bestDelta))
+            dbgPrintFormat("[CETSP] VNS reinsert: new len %.2f (delta %.2f)", bestLen, bestDelta)
         end
     end
 
@@ -1166,10 +1174,10 @@ function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, p
 
 	-- Stage 1: Compute Steiner zones
 	local steinerZones = computeSteinerZones(cetspNodes)
-	print("[CETSP] Computed " .. #steinerZones .. " Steiner zones")
+	dbgPrintFormat("[CETSP] Computed %d Steiner zones", #steinerZones)
 
 	if #steinerZones == 0 then
-		print("[CETSP] No zones found, returning empty result")
+		dbgPrint("[CETSP] No zones found, returning empty result")
 		return path, 0, 0, 0
 	end
 
@@ -1178,7 +1186,7 @@ function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, p
 	local order = buildNNTour(steinerZones)
 	local wps = optimizeWaypoints(order, steinerZones, parameters.maxPasses or 10)
 	local initLen = wpsTourLen(wps, cetspTaboos)
-	print("[CETSP] Built NN tour with length " .. string.format("%.2f", initLen))
+	dbgPrintFormat("[CETSP] Built NN tour with length %.2f", initLen)
 
 	-- Stage 3: 2-opt improvement
 	yield()
@@ -1186,7 +1194,7 @@ function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, p
 	order, wps, passCount = twoOpt(order, wps, steinerZones, cetspTaboos)
 	stageIters[3] = passCount
 	local afterOpt = wpsTourLen(wps, cetspTaboos)
-	print("[CETSP] 2-opt: " .. string.format("%.2f", beforeOpt) .. " -> " .. string.format("%.2f", afterOpt))
+	dbgPrintFormat("[CETSP] 2-opt: %.2f -> %.2f", beforeOpt, afterOpt)
 
 	-- Stage 4: Reinsertion VNS
 	yield()
@@ -1204,7 +1212,7 @@ function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, p
 		timeTaken = (debugprofilestop() - startTime) / 1000
 	end
 
-	print("[CETSP] Final tour length: " .. string.format("%.2f", tourLen) .. " (" .. string.format("%.3f", timeTaken) .. "s)")
+	dbgPrintFormat("[CETSP] Final tour length: %.2f (%.3f s)", tourLen, timeTaken)
 
 	-- Convert segments back to node IDs
 	for _, seg in ipairs(segments) do
@@ -1227,6 +1235,492 @@ function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, p
 	end
 
 	return path, metadata, tourLen, stageIters, timeTaken
+end
+
+-----------------------------------
+-- CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
+-- Arguments
+--   nodes       - The table containing a list of Routes node IDs to path
+--                 This list should only contain nodes on the same map. This
+--                 table should be indexed numerically from nodes[1] to nodes[n].
+--   metadata    - The table containing the zone cluster metadata, if available
+--   zoneID      - The map area ID of the map that the route is on.
+--   nodeID      - The Routes node ID to insert into the route.
+--   radius      - The neighborhood radius in yards for the CETSP.
+--   taboos      - The taboo polygon table (same format as SolveCETSP). May be nil.
+-- Returns
+--   pathLength  - The routed CETSP tour length in yards (consistent with SolveCETSP).
+-- Notes: This function modifies the original nodes[] and metadata[] tables
+--        directly. It performs minimal computation by greedily inserting
+--        the new node into an existing zone (if overlapping) or as a new zone,
+--        then runs a local 2-opt pass over the edges adjacent to the insertion
+--        to restore local optimality.
+function CETSP:InsertNode(nodes, metadata, zoneID, nodeID, radius, taboos)
+	assert(type(nodes) == "table", "InsertNode() expected table in 1st argument, got "..type(nodes).." instead.")
+
+	local numNodes = #nodes
+	if numNodes == 0 then
+		tinsert(nodes, nodeID)
+		if metadata then
+			tinsert(metadata, {nodeID})
+		end
+		dbgPrint("[CETSP:InsertNode] Trivial case (0 nodes): added first node")
+		return 0
+	end
+
+	if numNodes < 3 then
+		-- For 1-2 existing nodes the tour has no meaningful geometry yet;
+		-- just append the new zone and let the caller re-solve when ready.
+		tinsert(nodes, nodeID)
+		if metadata then
+			tinsert(metadata, {nodeID})
+		end
+		dbgPrintFormat("[CETSP:InsertNode] Trivial case: added node to zone (numNodes=%d)", numNodes)
+		return 0
+	end
+
+	-- Get zone dimensions for coordinate conversion
+	local zoneW, zoneH = Routes.Dragons:GetZoneSize(zoneID)
+
+	-- Convert taboos to CETSP coordinate space once here so every internal
+	-- routing call receives the real obstacles.
+	local cetspTaboos = {}
+	if taboos then
+		for _, taboo in ipairs(taboos) do
+			local cetspTaboo = {}
+			for _, tabooNodeID in ipairs(taboo.route) do
+				local x, y = Routes:getXY(tabooNodeID)
+				tinsert(cetspTaboo, {x = x * zoneW, y = y * zoneH})
+			end
+			tinsert(cetspTaboos, cetspTaboo)
+		end
+	end
+
+	-- Helper: build a CETSP circle table from a metadata cluster (list of node IDs)
+	local function getMetaCircles(nodeList)
+		local circles = {}
+		for _, nid in ipairs(nodeList) do
+			local x, y = Routes:getXY(nid)
+			tinsert(circles, {x = x * zoneW, y = y * zoneH, r = radius})
+		end
+		return circles
+	end
+
+	-- Helper: build a zone structure from a circle list
+	local function buildZoneFromCircles(circles)
+		local rep = feasibleIntersectionPoint(circles) or {x = circles[1].x, y = circles[1].y}
+		return {
+			circles  = circles,
+			rep      = rep,
+			isSingle = (#circles == 1),
+			-- nodeIdxs not needed here; we track cluster membership via metadata[]
+		}
+	end
+
+	-- Helper: rebuild the full zone + order arrays from the current metadata table.
+	local function buildAllZoneStructures()
+		local zones = {}
+		local order = {}
+		for i = 1, #metadata do
+			tinsert(zones, buildZoneFromCircles(getMetaCircles(metadata[i])))
+			tinsert(order, i)
+		end
+		return zones, order
+	end
+
+	-- Optimize waypoints, route through taboos, compute tour length, then atomically
+	-- rebuild nodes[] from the accepted solution so nodes and metadata stay in sync.
+	-- Returns the routed tour length in yards.
+	local function finalizeZones(zones, order)
+		local finalWps = optimizeWaypoints(order, zones, 8)
+		local segs = buildRoutedPath(finalWps, cetspTaboos)
+		local tourLen = routedTourLen(segs)
+
+		wipe(nodes)
+		for _, seg in ipairs(segs) do
+			local x = seg[1].x / zoneW
+			local y = seg[1].y / zoneH
+			tinsert(nodes, Routes:getID(x, y))
+		end
+
+		return tourLen
+	end
+
+	-- 2-opt pass restricted to edges touching insertedPos and its immediate neighbors.
+	-- Only the edges adjacent to the new zone can benefit from a swap involving it,
+	-- so this covers the useful candidates in O(n) comparisons instead of O(n^2).
+	local function localTwoOpt(zones, order, insertedPos)
+		local n = #order
+		if n < 4 then return order end
+
+		-- An edge index i represents the edge from order[i] to order[i+1 mod n].
+		local function edgeIdx(pos)
+			return ((pos - 1) % n) + 1
+		end
+
+		-- Collect the three edges that touch insertedPos (prev, self, next).
+		local candidates = {}
+		local seen = {}
+		for delta = -1, 1 do
+			local e = edgeIdx(insertedPos + delta)
+			if not seen[e] then
+				seen[e] = true
+				tinsert(candidates, e)
+			end
+		end
+
+		local wps = optimizeWaypoints(order, zones, 4)
+		local bestLen = wpsTourLen(wps, cetspTaboos)
+		local improved = true
+
+		while improved do
+			improved = false
+			for _, i in ipairs(candidates) do
+				-- Test swapping candidate edge i with every other non-adjacent edge j.
+				for j = i + 2, n - 1 do
+					-- Cheap rep-point pre-filter before paying for optimizeWaypoints.
+					local zi   = order[i]
+					local zi1  = order[(i % n) + 1]
+					local zj   = order[j]
+					local zj1  = order[(j % n) + 1]
+					local curCost  = repDist(zones, zi, zi1) + repDist(zones, zj, zj1)
+					local propCost = repDist(zones, zi, zj)  + repDist(zones, zi1, zj1)
+					if propCost < curCost - 0.1 then
+						-- Reverse order[i+1..j] in place and test the new tour length.
+						local left, right = i + 1, j
+						while left < right do
+							order[left], order[right] = order[right], order[left]
+							left = left + 1; right = right - 1
+						end
+						local newWps = optimizeWaypoints(order, zones, 4)
+						local newLen = wpsTourLen(newWps, cetspTaboos)
+						if newLen < bestLen - 0.5 then
+							wps     = newWps
+							bestLen = newLen
+							improved = true
+						else
+							-- Reject: undo the reversal.
+							left, right = i + 1, j
+							while left < right do
+								order[left], order[right] = order[right], order[left]
+								left = left + 1; right = right - 1
+							end
+						end
+					end
+				end
+			end
+		end
+
+		return order, wps, bestLen
+	end
+
+	-- Convert new node to CETSP format
+	local newX, newY = Routes:getXY(nodeID)
+	local newCircle = {x = newX * zoneW, y = newY * zoneH, r = radius}
+	dbgPrintFormat("[CETSP:InsertNode] Inserting node at (%.2f, %.2f) with radius %.0f", newX, newY, radius)
+
+	-- -------------------------------------------------------------------------
+	-- Main insertion logic
+	-- -------------------------------------------------------------------------
+	if metadata and #metadata > 0 then
+
+		-- Find which existing zones the new node's circle overlaps.
+		local overlappingZones = {}
+		for zoneIdx, cluster in ipairs(metadata) do
+			for _, clusterNodeID in ipairs(cluster) do
+				local x, y = Routes:getXY(clusterNodeID)
+				local circle = {x = x * zoneW, y = y * zoneH, r = radius}
+				if circlesIntersect(circle, newCircle) then
+					tinsert(overlappingZones, zoneIdx)
+					break
+				end
+			end
+		end
+		dbgPrintFormat("[CETSP:InsertNode] Found %d overlapping zone(s)", #overlappingZones)
+
+		-- ------------------------------------------------------------------
+		-- Case A: New node overlaps exactly one existing zone.
+		-- Ungroup that zone, recompute Steiner sub-zones, splice them back
+		-- into the tour at the same position the original zone occupied.
+		-- ------------------------------------------------------------------
+		if #overlappingZones == 1 then
+			local zoneIdx = overlappingZones[1]
+
+			-- Collect all nodes from the overlapping zone plus the new node.
+			local ungroupedNodes = {}
+			for _, clusterNodeID in ipairs(metadata[zoneIdx]) do
+				tinsert(ungroupedNodes, clusterNodeID)
+			end
+			tinsert(ungroupedNodes, nodeID)
+
+			-- Remove the old zone; nodes[] will be fully rebuilt by finalizeZones.
+			tremove(metadata, zoneIdx)
+
+			-- Recompute Steiner zones for the ungrouped pool.
+			local cetspNodes = {}
+			for _, node_id in ipairs(ungroupedNodes) do
+				local x, y = Routes:getXY(node_id)
+				tinsert(cetspNodes, {x = x * zoneW, y = y * zoneH, r = radius})
+			end
+			local newSteinerZones = computeSteinerZones(cetspNodes)
+
+			-- Splice sub-zones back at zoneIdx, preserving relative sub-zone order.
+			-- Inserting at the original position gives optimizeWaypoints a spatially
+			-- sensible starting tour rather than a degenerate appended one.
+			for subIdx, zone in ipairs(newSteinerZones) do
+				local zoneNodeIDs = {}
+				for _, nodeIdx in ipairs(zone.nodeIdxs) do
+					tinsert(zoneNodeIDs, ungroupedNodes[nodeIdx])
+				end
+				table.insert(metadata, zoneIdx + subIdx - 1, zoneNodeIDs)
+			end
+
+			local zones, order = buildAllZoneStructures()
+			order, _, _ = localTwoOpt(zones, order, zoneIdx)
+			local tourLen = finalizeZones(zones, order)
+
+			dbgPrintFormat("[CETSP:InsertNode] Ungrouped zone %d -> %d sub-zones; tour=%.2f", zoneIdx, #newSteinerZones, tourLen)
+			return tourLen
+
+		-- ------------------------------------------------------------------
+		-- Case B: New node overlaps multiple existing zones.
+		-- Merge all their nodes plus the new node into one pool, recompute
+		-- Steiner zones, then find the best insertion position for each
+		-- sub-zone using the rep-point delta heuristic. One final
+		-- optimizeWaypoints pass is done after all positions are committed.
+		-- ------------------------------------------------------------------
+		elseif #overlappingZones > 1 then
+			-- The lowest tour index among the removed zones serves as the anchor
+			-- for re-inserting sub-zones so they land near their original position.
+			local anchorIdx = overlappingZones[1]  -- already sorted ascending
+
+			-- Collect all nodes from every overlapping zone plus the new node.
+			local ungroupedNodes = {}
+			for _, zoneIdx in ipairs(overlappingZones) do
+				for _, clusterNodeID in ipairs(metadata[zoneIdx]) do
+					tinsert(ungroupedNodes, clusterNodeID)
+				end
+			end
+			tinsert(ungroupedNodes, nodeID)
+
+			-- Remove overlapping zones in reverse order to keep indices valid.
+			for i = #overlappingZones, 1, -1 do
+				tremove(metadata, overlappingZones[i])
+			end
+			-- Adjust anchorIdx for the zones that were removed before it.
+			local removedBefore = 0
+			for _, zi in ipairs(overlappingZones) do
+				if zi < anchorIdx then removedBefore = removedBefore + 1 end
+			end
+			anchorIdx = anchorIdx - removedBefore
+			if anchorIdx < 1 then anchorIdx = 1 end
+
+			-- Recompute Steiner zones for the ungrouped pool.
+			local cetspNodes = {}
+			for _, node_id in ipairs(ungroupedNodes) do
+				local x, y = Routes:getXY(node_id)
+				tinsert(cetspNodes, {x = x * zoneW, y = y * zoneH, r = radius})
+			end
+			local newSteinerZones = computeSteinerZones(cetspNodes)
+
+			-- For each new sub-zone, find the best insertion position using only
+			-- the O(1) rep-point delta, accumulating results into a local table.
+			-- metadata is not touched until all positions are decided so it is
+			-- never left in a partially updated state.
+			local insertedMetadata = {}
+			for i = 1, #metadata do
+				tinsert(insertedMetadata, metadata[i])
+			end
+
+			for subIdx, zone in ipairs(newSteinerZones) do
+				local zoneNodeIDs = {}
+				for _, nodeIdx in ipairs(zone.nodeIdxs) do
+					tinsert(zoneNodeIDs, ungroupedNodes[nodeIdx])
+				end
+
+				-- Rebuild temp zone list to account for sub-zones already placed.
+				local tempZones = {}
+				for i = 1, #insertedMetadata do
+					tinsert(tempZones, buildZoneFromCircles(getMetaCircles(insertedMetadata[i])))
+				end
+
+				local nTemp     = #tempZones
+				local bestPos   = anchorIdx + subIdx - 1  -- seed near the anchor
+				local bestDelta = math.huge
+
+				for pos = 1, nTemp + 1 do
+					local prevIdx = (pos - 2) % nTemp + 1
+					local nextIdx = pos % nTemp + 1
+					local prevRep = tempZones[prevIdx].rep
+					local nextRep = tempZones[nextIdx].rep
+
+					local dx1 = prevRep.x - nextRep.x
+					local dy1 = prevRep.y - nextRep.y
+					local removed = sqrt(dx1*dx1 + dy1*dy1)
+
+					local dx2 = prevRep.x - zone.rep.x
+					local dy2 = prevRep.y - zone.rep.y
+					local dx3 = zone.rep.x - nextRep.x
+					local dy3 = zone.rep.y - nextRep.y
+					local added = sqrt(dx2*dx2 + dy2*dy2) + sqrt(dx3*dx3 + dy3*dy3)
+
+					local delta = added - removed
+					if delta < bestDelta then
+						bestDelta = delta
+						bestPos   = pos
+					end
+				end
+
+				table.insert(insertedMetadata, bestPos, zoneNodeIDs)
+			end
+
+			-- All positions decided; atomically replace metadata contents.
+			wipe(metadata)
+			for i = 1, #insertedMetadata do
+				tinsert(metadata, insertedMetadata[i])
+			end
+
+			local zones, order = buildAllZoneStructures()
+			order, _, _ = localTwoOpt(zones, order, anchorIdx)
+			local tourLen = finalizeZones(zones, order)
+
+			dbgPrintFormat("[CETSP:InsertNode] Merged %d overlapping zones -> %d sub-zones; tour=%.2f", #overlappingZones, #newSteinerZones, tourLen)
+			return tourLen
+
+		-- ------------------------------------------------------------------
+		-- Case C: No overlap — insert as a brand-new single-node zone.
+		-- Pick the tour gap with the rep-point delta heuristic, then use
+		-- bisectWaypoint to place the initial waypoint relative to its
+		-- neighbors rather than at the raw node coordinate.
+		-- ------------------------------------------------------------------
+		else
+			local newZoneStruct = {
+				circles  = {newCircle},
+				rep      = {x = newCircle.x, y = newCircle.y},
+				isSingle = true,
+			}
+
+			local existingZones = {}
+			for i = 1, #metadata do
+				tinsert(existingZones, buildZoneFromCircles(getMetaCircles(metadata[i])))
+			end
+
+			local n = #existingZones
+			local bestPos  = n + 1
+			local minDelta = math.huge
+
+			for pos = 1, n + 1 do
+				local prevIdx = (pos - 2) % n + 1
+				local nextIdx = pos % n + 1
+				local prevRep = existingZones[prevIdx].rep
+				local nextRep = existingZones[nextIdx].rep
+
+				local dx1 = prevRep.x - nextRep.x
+				local dy1 = prevRep.y - nextRep.y
+				local removed = sqrt(dx1*dx1 + dy1*dy1)
+
+				local dx2 = prevRep.x - newZoneStruct.rep.x
+				local dy2 = prevRep.y - newZoneStruct.rep.y
+				local dx3 = newZoneStruct.rep.x - nextRep.x
+				local dy3 = newZoneStruct.rep.y - nextRep.y
+				local added = sqrt(dx2*dx2 + dy2*dy2) + sqrt(dx3*dx3 + dy3*dy3)
+
+				local delta = added - removed
+				if delta < minDelta then
+					minDelta = delta
+					bestPos  = pos
+				end
+			end
+
+			dbgPrintFormat("[CETSP:InsertNode] No-overlap: inserting new zone at position %d (delta=%.2f)", bestPos, minDelta)
+
+			table.insert(metadata, bestPos, {nodeID})
+
+			-- Build the full zone list with the new entry included, then run
+			-- bisectWaypoint once to seed the waypoint relative to its neighbors
+			-- before optimizeWaypoints refines all positions together.
+			local zones, order = buildAllZoneStructures()
+			local prevPos = (bestPos - 2) % #zones + 1
+			local nextPos = bestPos % #zones + 1
+			local prevWp  = {x = zones[order[prevPos]].rep.x, y = zones[order[prevPos]].rep.y}
+			local nextWp  = {x = zones[order[nextPos]].rep.x, y = zones[order[nextPos]].rep.y}
+			bisectWaypoint(zones[order[bestPos]], prevWp, nextWp)
+
+			order, _, _ = localTwoOpt(zones, order, bestPos)
+			local tourLen = finalizeZones(zones, order)
+
+			dbgPrintFormat("[CETSP:InsertNode] Created new zone at position %d; tour=%.2f", bestPos, tourLen)
+			return tourLen
+		end
+
+	else
+		-- No metadata available: just append and return.
+		-- Without zone structures we cannot do CETSP routing, so the returned
+		-- length is a TSP approximation only.
+		tinsert(nodes, nodeID)
+		dbgPrint("[CETSP:InsertNode] No metadata, added to simple node list")
+		return Routes.TSP:PathLength(nodes, zoneID)
+	end
+end
+
+-----------------------------------
+-- CETSP:DeleteNode(nodes, metadata, zoneID, coord, radius)
+-- Arguments
+--   nodes       - The table containing a list of Routes node IDs to path
+--                 This list should only contain nodes on the same map. This
+--                 table should be indexed numerically from nodes[1] to nodes[n].
+--   metadata    - The table containing the zone cluster metadata, if available
+--   zoneID      - The map area ID of the map that the route is on.
+--   coord       - The Routes coordinate ID of the node to delete.
+-- Returns
+--   found       - Boolean indicating whether the node was found and deleted.
+-- Notes: This function modifies the original nodes[] and metadata[] tables
+--        directly. When a node is deleted from a zone with multiple nodes,
+--        the zone remains valid. When the last node is removed, the zone is deleted.
+function CETSP:DeleteNode(nodes, metadata, zoneID, coord)
+	assert(type(nodes) == "table", "DeleteNode() expected table in 1st argument, got "..type(nodes).." instead.")
+
+	dbgPrintFormat("[CETSP:DeleteNode] Attempting to delete coord=%s, zoneID=%d, metadata=%s", tostring(coord), zoneID, metadata and "yes" or "no")
+
+	-- Search for the node in metadata zones
+	if metadata and #metadata > 0 then
+		dbgPrintFormat("[CETSP:DeleteNode] Searching in %d metadata zones", #metadata)
+		for i = 1, #metadata do
+			for j = 1, #metadata[i] do
+				if coord == metadata[i][j] then
+					-- Found the node in zone i
+					dbgPrintFormat("[CETSP:DeleteNode] Found node in zone %d at position %d (zone has %d nodes)", i, j, #metadata[i])
+					if #metadata[i] > 1 then
+						-- More than 1 node in this zone: just remove the node
+						tremove(metadata[i], j)
+						dbgPrintFormat("[CETSP:DeleteNode] Removed node from zone %d (now has %d nodes)", i, #metadata[i])
+					else
+						-- Only 1 node in this zone: remove the entire zone and the correspondsing node
+						tremove(metadata, i)
+						tremove(nodes, i)
+						dbgPrintFormat("[CETSP:DeleteNode] Removed entire zone %d (zone had only 1 node)", i)
+					end
+
+					return true
+				end
+			end
+		end
+		dbgPrint("[CETSP:DeleteNode] Node not found in any metadata zone")
+	else
+		-- No metadata: simple node list, just remove the node
+		dbgPrint("[CETSP:DeleteNode] No metadata available, searching in simple node list")
+		for i = 1, #nodes do
+			if coord == nodes[i] then
+				tremove(nodes, i)
+				dbgPrintFormat("[CETSP:DeleteNode] Removed node from simple list at position %d", i)
+				return true
+			end
+		end
+		dbgPrint("[CETSP:DeleteNode] Node not found in simple node list")
+	end
+
+	dbgPrint("[CETSP:DeleteNode] Deletion failed - node not found")
+	return false
 end
 
 -- vim: ts=4 noexpandtab

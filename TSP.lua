@@ -304,7 +304,7 @@ function TSP:SolveTSP(nodes, metadata, taboos, zoneID, parameters, path, nonbloc
 		end
 	end
 	local metadata = metadata2
-	
+
 	-- Setup ACO parameters
 	local startTime
 	if nonblocking then
@@ -416,7 +416,7 @@ function TSP:SolveTSP(nodes, metadata, taboos, zoneID, parameters, path, nonbloc
 	while nochanges < MAXUNCHANGEDINTERATION do
 		nochanges = nochanges + 1
 		count = count + 1
-		
+
 		-- Step 3	- Each ant k starts at a randomly selected node
 		for k = 1, numAnts do
 			local antpath = ants[k]
@@ -505,9 +505,9 @@ function TSP:SolveTSP(nodes, metadata, taboos, zoneID, parameters, path, nonbloc
 				end
 				nochanges = 0 -- There were changes, so reset nochanges counter to 0
 			end
-		
+
 		end
-			
+
 		-- Step 12	- Perform global pheromone trail update on the best known solution
 		local curnode = shortestPath[numNodes]
 		local tempConstant = GLOBALDECAY * QUALITY / shortestPathLength
@@ -518,7 +518,7 @@ function TSP:SolveTSP(nodes, metadata, taboos, zoneID, parameters, path, nonbloc
 			antprob[u] = phero[u] ^ ALPHA / weight[u] ^ BETA -- Update the probability
 			curnode = nextnode
 		end
-		
+
 		-- report how long path this round found (with progress==1)
 		if nonblocking and TSPUpdateFrame.statusFunc then
 			TSPUpdateFrame.statusFunc(count, 1, shortestPathLength)
@@ -546,7 +546,7 @@ function TSP:SolveTSP(nodes, metadata, taboos, zoneID, parameters, path, nonbloc
 				yield()
 			end
 		end
-		
+
 		-- Recompute the path length
 		shortestPathLength = 0
 		local curnode = shortestPath[numNodes]
@@ -866,6 +866,61 @@ function TSP:PathLength(nodes, zoneID)
 	return pathLength
 end
 
+-- TSP:DeleteNode(nodes, metadata, zoneID, coord)
+--   Deletes a node from an existing TSP route.
+-- Arguments
+--   nodes       - The table containing a list of Routes node IDs to path
+--                 This list should only contain nodes on the same map. This
+--                 table should be indexed numerically from nodes[1] to nodes[n].
+--   metadata    - The table containing the cluster metadata, if available
+--   zoneID      - The map area ID of the map that the route is on.
+--   coord       - The Routes coordinate ID of the node to delete.
+-- Returns
+--   found       - Boolean indicating whether the node was found and deleted.
+-- Notes: This function modifies the original nodes[] and metadata[] tables directly.
+function TSP:DeleteNode(nodes, metadata, zoneID, coord)
+	assert(type(nodes) == "table", "DeleteNode() expected table in 1st argument, got "..type(nodes).." instead.")
+
+	-- If we have metadata, we're working with a clustered route
+	if metadata and #metadata > 0 then
+		-- Search for the node in the metadata (cluster information)
+		for i = 1, #nodes do
+			local num_data = #metadata[i]
+			for j = 1, num_data do
+				if coord == metadata[i][j] then
+					-- Found the node in cluster i
+					if num_data > 1 then
+						-- More than 1 node in this cluster: remove it and recalculate centroid
+						local x, y = floor(coord / 10000) / 10000, (coord % 10000) / 10000
+						local cx, cy = floor(nodes[i] / 10000) / 10000, (nodes[i] % 10000) / 10000
+
+						-- Recalculate centroid using (old_centroid * count - removed_node) / (count - 1)
+						cx, cy = (cx * num_data - x) / (num_data - 1), (cy * num_data - y) / (num_data - 1)
+
+						tremove(metadata[i], j)
+						nodes[i] = floor(cx * 10000 + 0.5) * 10000 + floor(cy * 10000 + 0.5)
+					else
+						-- Only 1 node in this cluster: remove the entire cluster
+						tremove(metadata, i)
+						tremove(nodes, i)
+					end
+					return true
+				end
+			end
+		end
+	else
+		-- No metadata: simple route, just remove the node
+		for i = 1, #nodes do
+			if coord == nodes[i] then
+				tremove(nodes, i)
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
 -- TSP:ClusterRoute(nodes, zoneID, radius)
 -- Arguments
 --   nodes    - The table containing a list of Routes node IDs to path
@@ -1086,7 +1141,7 @@ end
 --              table should be indexed numerically from nodes[1] to nodes[n].
 -- Returns nothing
 -- Notes: The original table sent in is modified directly
--- 
+--
 -- This function is contributed by Polarina for quickly solving a TSP in
 -- O(n log n). The method merely calculates a centroid, and compares the angle
 -- of every node with the centroid and sorts it that way, resulting in a tour

@@ -808,7 +808,16 @@ function Routes:InsertNode(zone, coord, node_name)
 					if flag then
 						tinsert(route_data.taboolist, coord)
 					else
-						route_data.length = self.TSP:InsertNode(route_data.route, route_data.metadata, self.LZName[zone], coord, route_data.cluster_dist or 65) -- 65 is the old default
+						-- Determine which solver to use based on route's algorithm setting
+						local algorithm = route_data.opt_algorithm or "TSP"
+						local solver = (algorithm == "CETSP") and self.CETSP or self.TSP
+
+						-- Call the appropriate solver's InsertNode method
+						if algorithm == "CETSP" then
+							route_data.length = solver:InsertNode(route_data.route, route_data.metadata, self.LZName[zone], coord, route_data.cetsp_radius or db.defaults.cetsp_radius)
+						else
+							route_data.length = solver:InsertNode(route_data.route, route_data.metadata, self.LZName[zone], coord, route_data.cluster_dist or 65) -- 65 is the old default
+						end
 						throttleFrame:Show()
 					end
 					break
@@ -836,48 +845,18 @@ function Routes:DeleteNode(zone, coord, node_name)
 			local flag = false
 			for k, v in pairs(route_data.selection) do
 				if k == node_name or v == node_name then
+					-- Determine which solver to use based on route's algorithm setting
+					local algorithm = route_data.opt_algorithm or "TSP"
+					local solver = (algorithm == "CETSP") and self.CETSP or self.TSP
+
 					-- Delete the node if it exists in this route
-					if route_data.metadata then
-						-- this is a clustered route
-						for i = 1, #route_data.route do
-							local num_data = #route_data.metadata[i]
-							for j = 1, num_data do
-								if coord == route_data.metadata[i][j] then
-									-- recalcuate centroid
-									local x, y = self:getXY(coord)
-									local cx, cy = self:getXY(route_data.route[i])
-									if num_data > 1 then
-										-- more than 1 node in this cluster
-										cx, cy = (cx * num_data - x) / (num_data-1), (cy * num_data - y) / (num_data-1)
-										tremove(route_data.metadata[i], j)
-										route_data.route[i] = self:getID(cx, cy)
-									else
-										-- only 1 node in this cluster, just remove it
-										tremove(route_data.metadata, i)
-										tremove(route_data.route, i)
-									end
-									route_data.length = self.TSP:PathLength(route_data.route, self.LZName[zone])
-									throttleFrame:Show()
-									flag = true
-									break
-								end
-							end
-							if flag then break end
-						end
+					if solver:DeleteNode(route_data.route, route_data.metadata, self.LZName[zone], coord) then
+						-- Node was found and deleted, update path length
+						route_data.length = self.TSP:PathLength(route_data.route, self.LZName[zone])
+						throttleFrame:Show()
+						flag = true
 					else
-						-- this is not a clustered route
-						for i = 1, #route_data.route do
-							if coord == route_data.route[i] then
-								tremove(route_data.route, i)
-								route_data.length = self.TSP:PathLength(route_data.route, self.LZName[zone])
-								throttleFrame:Show()
-								flag = true
-								break
-							end
-						end
-					end
-					if not flag then
-						-- node not found yet, so search the taboolist
+						-- node not found in route, so search the taboolist
 						for i = 1, #route_data.taboolist do
 							if route_data.taboolist[i] == coord then
 								tremove(route_data.taboolist, i)
