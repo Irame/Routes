@@ -22,11 +22,12 @@ Routes.CETSP = CETSP
 
 local function dbgPrint(...)
 	-- Uncomment for debug output
-	print(...)
+	--print(...)
 end
 
 local function dbgPrintFormat(...)
-	dbgPrint(string.format(...))
+	-- Uncomment for debug output
+	--dbgPrint(string.format(...))
 end
 
 -----------------------------------------------------
