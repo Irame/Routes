@@ -702,46 +702,46 @@ end
 -- `pruneRadius`. When pruneRadius is nil the function falls back to a
 -- fraction of the bounding-box diagonal so it works without tuning.
 local function buildPruneList(zones, pruneRadius)
-    local n = #zones
+	local n = #zones
 
-    if not pruneRadius then
-        -- Compute bounding box of rep points and use 30 % of the diagonal.
-        local minX, minY, maxX, maxY = inf, inf, -inf, -inf
-        for _, z in ipairs(zones) do
-            if z.rep.x < minX then minX = z.rep.x end
-            if z.rep.y < minY then minY = z.rep.y end
-            if z.rep.x > maxX then maxX = z.rep.x end
-            if z.rep.y > maxY then maxY = z.rep.y end
-        end
-        local diag = sqrt((maxX - minX)^2 + (maxY - minY)^2)
-        pruneRadius = diag * 0.30
-    end
+	if not pruneRadius then
+		-- Compute bounding box of rep points and use 30 % of the diagonal.
+		local minX, minY, maxX, maxY = inf, inf, -inf, -inf
+		for _, z in ipairs(zones) do
+			if z.rep.x < minX then minX = z.rep.x end
+			if z.rep.y < minY then minY = z.rep.y end
+			if z.rep.x > maxX then maxX = z.rep.x end
+			if z.rep.y > maxY then maxY = z.rep.y end
+		end
+		local diag = sqrt((maxX - minX)^2 + (maxY - minY)^2)
+		pruneRadius = diag * 0.30
+	end
 
-    local prune = {}
-    for i = 1, n do
-        prune[i] = {}
-    end
+	local prune = {}
+	for i = 1, n do
+		prune[i] = {}
+	end
 
-    for i = 1, n do
-        for j = i + 1, n do
-            local dx = zones[i].rep.x - zones[j].rep.x
-            local dy = zones[i].rep.y - zones[j].rep.y
-            if dx * dx + dy * dy < pruneRadius * pruneRadius then
-                tinsert(prune[i], j)
-                tinsert(prune[j], i)
-            end
-        end
-    end
+	for i = 1, n do
+		for j = i + 1, n do
+			local dx = zones[i].rep.x - zones[j].rep.x
+			local dy = zones[i].rep.y - zones[j].rep.y
+			if dx * dx + dy * dy < pruneRadius * pruneRadius then
+				tinsert(prune[i], j)
+				tinsert(prune[j], i)
+			end
+		end
+	end
 
-    return prune
+	return prune
 end
 
 -- Straight-line distance between the rep points of two zones by index.
 -- Used for the cheap delta pre-filter (no taboo routing overhead).
 local function repDist(zones, a, b)
-    local dx = zones[a].rep.x - zones[b].rep.x
-    local dy = zones[a].rep.y - zones[b].rep.y
-    return sqrt(dx * dx + dy * dy)
+	local dx = zones[a].rep.x - zones[b].rep.x
+	local dy = zones[a].rep.y - zones[b].rep.y
+	return sqrt(dx * dx + dy * dy)
 end
 
 --[[
@@ -770,111 +770,111 @@ To keep that call affordable:
 Iterates until no improving swap is found or the iteration cap is reached.
 ]]
 local function twoOpt(order, wps, zones, taboos)
-    local n = #order
-    if n < 4 then return order, wps end
+	local n = #order
+	if n < 4 then return order, wps end
 
-    -- Build neighbor-prune list (analogous to TSP's prune[] table).
-    local prune = buildPruneList(zones)
+	-- Build neighbor-prune list (analogous to TSP's prune[] table).
+	local prune = buildPruneList(zones)
 
-    -- Reverse-lookup: orderR[zoneIdx] = position in order[] (like TSP's pathR).
-    local orderR = {}
-    for pos = 1, n do
-        orderR[order[pos]] = pos
-    end
+	-- Reverse-lookup: orderR[zoneIdx] = position in order[] (like TSP's pathR).
+	local orderR = {}
+	for pos = 1, n do
+		orderR[order[pos]] = pos
+	end
 
-    -- Current best tour length (used for acceptance threshold).
-    local bestLen = wpsTourLen(wps, taboos)
+	-- Current best tour length (used for acceptance threshold).
+	local bestLen = wpsTourLen(wps, taboos)
 
-    local improved = true
-    local iters    = 0
+	local improved = true
+	local iters    = 0
 
-    while improved and iters < 40 do
-        dbgPrint("[CETSP] 2-opt iteration " .. iters)
-        improved = false
-        iters    = iters + 1
+	while improved and iters < 40 do
+		dbgPrint("[CETSP] 2-opt iteration " .. iters)
+		improved = false
+		iters    = iters + 1
 
-        for i = 1, n - 1 do
-            local zi   = order[i]
-            local zi1  = order[i + 1]
+		for i = 1, n - 1 do
+			local zi   = order[i]
+			local zi1  = order[i + 1]
 
-            -- Cheap edge cost from rep-points for the pre-filter.
-            local edgeAB = repDist(zones, zi, zi1)
+			-- Cheap edge cost from rep-points for the pre-filter.
+			local edgeAB = repDist(zones, zi, zi1)
 
-            -- Only iterate over pruned neighbors of zi (like TSP's inner loop).
-            for _, zj in ipairs(prune[zi]) do
-                local j = orderR[zj]
+			-- Only iterate over pruned neighbors of zi (like TSP's inner loop).
+			for _, zj in ipairs(prune[zi]) do
+				local j = orderR[zj]
 
-                -- Standard 2-opt validity:
-                --   j must exist in order (guard nil from orderR miss),
-                --   j must be strictly after i+1 (no adjacent edge),
-                --   j must be < n so that order[j+1] is always valid
-                --   (the wrap-around edge i=1,j=n is also excluded by j < n).
-                if j and j > i + 1 and j < n then
-                    local zj1 = order[j + 1]  -- safe: j < n guarantees j+1 <= n
+				-- Standard 2-opt validity:
+				--   j must exist in order (guard nil from orderR miss),
+				--   j must be strictly after i+1 (no adjacent edge),
+				--   j must be < n so that order[j+1] is always valid
+				--   (the wrap-around edge i=1,j=n is also excluded by j < n).
+				if j and j > i + 1 and j < n then
+					local zj1 = order[j + 1]  -- safe: j < n guarantees j+1 <= n
 
-                    -- ── Cheap delta pre-filter (rep-point heuristic) ────────
-                    -- Current edges: (zi → zi1) + (zj → zj1)
-                    -- Proposed edges: (zi → zj)  + (zi1 → zj1)
-                    -- Only proceed if the proposed pair is shorter by at
-                    -- least a small margin (avoids paying optimizeWaypoints
-                    -- for obviously bad swaps).
-                    local edgeCD     = repDist(zones, zj, zj1)
-                    local proposedAC = repDist(zones, zi, zj)
-                    local proposedBD = repDist(zones, zi1, zj1)
+					-- ── Cheap delta pre-filter (rep-point heuristic) ────────
+					-- Current edges: (zi → zi1) + (zj → zj1)
+					-- Proposed edges: (zi → zj)  + (zi1 → zj1)
+					-- Only proceed if the proposed pair is shorter by at
+					-- least a small margin (avoids paying optimizeWaypoints
+					-- for obviously bad swaps).
+					local edgeCD     = repDist(zones, zj, zj1)
+					local proposedAC = repDist(zones, zi, zj)
+					local proposedBD = repDist(zones, zi1, zj1)
 
-                    if proposedAC + proposedBD < edgeAB + edgeCD - 0.1 then
-                        -- ── In-place segment reversal (like TSP) ─────────────
-                        -- Reverse order[i+1 .. j] and keep orderR in sync.
-                        local left  = i + 1
-                        local right = j
-                        while left < right do
-                            local L, R = order[left], order[right]
-                            order[left],  order[right]  = R, L
-                            orderR[L], orderR[R] = right, left
-                            left  = left  + 1
-                            right = right - 1
-                        end
+					if proposedAC + proposedBD < edgeAB + edgeCD - 0.1 then
+						-- ── In-place segment reversal (like TSP) ─────────────
+						-- Reverse order[i+1 .. j] and keep orderR in sync.
+						local left  = i + 1
+						local right = j
+						while left < right do
+							local L, R = order[left], order[right]
+							order[left],  order[right]  = R, L
+							orderR[L], orderR[R] = right, left
+							left  = left  + 1
+							right = right - 1
+						end
 
-                        -- ── CETSP-specific acceptance check ──────────────────
-                        -- Now that zone order is reversed we re-optimise
-                        -- waypoints and measure the true routed length.
-                        local newWps = optimizeWaypoints(order, zones, 4)
-                        local newLen = wpsTourLen(newWps, taboos)
+						-- ── CETSP-specific acceptance check ──────────────────
+						-- Now that zone order is reversed we re-optimise
+						-- waypoints and measure the true routed length.
+						local newWps = optimizeWaypoints(order, zones, 4)
+						local newLen = wpsTourLen(newWps, taboos)
 
-                        if newLen < bestLen - 0.5 then
-                            -- Accept the swap.
-                            wps     = newWps
-                            bestLen = newLen
-                            improved = true
+						if newLen < bestLen - 0.5 then
+							-- Accept the swap.
+							wps     = newWps
+							bestLen = newLen
+							improved = true
 
-                            -- Refresh the edge reference for the outer loop
-                            -- (mirrors TSP's `b = path[i+1]; z = weight[...]`).
-                            zi1   = order[i + 1]
-                            edgeAB = repDist(zones, zi, zi1)
-                        else
-                            -- Reject: undo the reversal.
-                            left  = i + 1
-                            right = j
-                            while left < right do
-                                local L, R = order[left], order[right]
-                                order[left],  order[right]  = R, L
-                                orderR[L], orderR[R] = right, left
-                                left  = left  + 1
-                                right = right - 1
-                            end
-                            -- zi1 / edgeAB are still valid after undo.
-                        end
-                    end
-                end
+							-- Refresh the edge reference for the outer loop
+							-- (mirrors TSP's `b = path[i+1]; z = weight[...]`).
+							zi1   = order[i + 1]
+							edgeAB = repDist(zones, zi, zi1)
+						else
+							-- Reject: undo the reversal.
+							left  = i + 1
+							right = j
+							while left < right do
+								local L, R = order[left], order[right]
+								order[left],  order[right]  = R, L
+								orderR[L], orderR[R] = right, left
+								left  = left  + 1
+								right = right - 1
+							end
+							-- zi1 / edgeAB are still valid after undo.
+						end
+					end
+				end
 
-            end
+			end
 
 			setStatus(3, iters, i/(n-1), bestLen)
-        end
+		end
 
-    end
+	end
 
-    return order, wps, iters
+	return order, wps, iters
 end
 
 -- Build a new order by removing the segment [from .. from+segLen-1] and
@@ -888,79 +888,79 @@ end
 --
 -- Caller is responsible for ensuring insertAfter is not in [from-1, segEnd].
 local function applyReinsertion(order, from, segLen, insertAfter)
-    local n      = #order
-    local segEnd = from + segLen - 1
-    local result = {}
+	local n      = #order
+	local segEnd = from + segLen - 1
+	local result = {}
 
-    if insertAfter < from then
-        -- Segment moves LEFT: insert before its current position.
-        -- New layout: [1..insertAfter] [seg] [insertAfter+1..from-1] [segEnd+1..n]
-        for k = 1, insertAfter do
-            result[#result + 1] = order[k]
-        end
-        for k = from, segEnd do
-            result[#result + 1] = order[k]
-        end
-        for k = insertAfter + 1, from - 1 do
-            result[#result + 1] = order[k]
-        end
-        for k = segEnd + 1, n do
-            result[#result + 1] = order[k]
-        end
-    else
-        -- Segment moves RIGHT: insertAfter > segEnd.
-        -- New layout: [1..from-1] [segEnd+1..insertAfter] [seg] [insertAfter+1..n]
-        for k = 1, from - 1 do
-            result[#result + 1] = order[k]
-        end
-        for k = segEnd + 1, insertAfter do
-            result[#result + 1] = order[k]
-        end
-        for k = from, segEnd do
-            result[#result + 1] = order[k]
-        end
-        for k = insertAfter + 1, n do
-            result[#result + 1] = order[k]
-        end
-    end
+	if insertAfter < from then
+		-- Segment moves LEFT: insert before its current position.
+		-- New layout: [1..insertAfter] [seg] [insertAfter+1..from-1] [segEnd+1..n]
+		for k = 1, insertAfter do
+			result[#result + 1] = order[k]
+		end
+		for k = from, segEnd do
+			result[#result + 1] = order[k]
+		end
+		for k = insertAfter + 1, from - 1 do
+			result[#result + 1] = order[k]
+		end
+		for k = segEnd + 1, n do
+			result[#result + 1] = order[k]
+		end
+	else
+		-- Segment moves RIGHT: insertAfter > segEnd.
+		-- New layout: [1..from-1] [segEnd+1..insertAfter] [seg] [insertAfter+1..n]
+		for k = 1, from - 1 do
+			result[#result + 1] = order[k]
+		end
+		for k = segEnd + 1, insertAfter do
+			result[#result + 1] = order[k]
+		end
+		for k = from, segEnd do
+			result[#result + 1] = order[k]
+		end
+		for k = insertAfter + 1, n do
+			result[#result + 1] = order[k]
+		end
+	end
 
-    return result
+	return result
 end
 
 -- Cheap rep-point delta for moving segment [from..segEnd] to after insertAfter.
 -- Returns (added_edges - removed_edges): negative means improvement.
 local function orKDelta(order, zones, from, segLen, insertAfter)
-    local n      = #order
-    local segEnd = from + segLen - 1
+	local n      = #order
+	local segEnd = from + segLen - 1
 
-    local function rep(pos)
-        return zones[order[((pos - 1) % n) + 1]].rep
-    end
+	local function rep(pos)
+		return zones[order[((pos - 1) % n) + 1]].rep
+	end
 
-    local function d(a, b)
-        local dx = a.x - b.x
-        local dy = a.y - b.y
-        return sqrt(dx * dx + dy * dy)
-    end
+	local function d(a, b)
+		local dx = a.x - b.x
+		local dy = a.y - b.y
+		return sqrt(dx * dx + dy * dy)
+	end
 
-    -- Three edges broken: pred(from)->from, segEnd->succ(segEnd), insertAfter->succ(insertAfter)
-    -- Three edges added:  pred(from)->succ(segEnd), insertAfter->from, segEnd->succ(insertAfter)
-    local predFrom   = rep(from - 1)
-    local repFrom    = rep(from)
-    local repSegEnd  = rep(segEnd)
-    local succSegEnd = rep(segEnd + 1)
-    local repInsert  = rep(insertAfter)
-    local succInsert = rep(insertAfter + 1)
+	-- Three edges broken: pred(from)->from, segEnd->succ(segEnd), insertAfter->succ(insertAfter)
+	-- Three edges added:  pred(from)->succ(segEnd), insertAfter->from, segEnd->succ(insertAfter)
+	local predFrom   = rep(from - 1)
+	local repFrom    = rep(from)
+	local repSegEnd  = rep(segEnd)
+	local succSegEnd = rep(segEnd + 1)
+	local repInsert  = rep(insertAfter)
+	local succInsert = rep(insertAfter + 1)
 
-    local removed = d(predFrom,  repFrom)
-                  + d(repSegEnd, succSegEnd)
-                  + d(repInsert, succInsert)
+	local removed = d(predFrom,  repFrom)
+				  + d(repSegEnd, succSegEnd)
+				  + d(repInsert, succInsert)
 
-    local added   = d(predFrom,  succSegEnd)
-                  + d(repInsert, repFrom)
-                  + d(repSegEnd, succInsert)
+	local added   = d(predFrom,  succSegEnd)
+				  + d(repInsert, repFrom)
+				  + d(repSegEnd, succInsert)
 
-    return added - removed
+	return added - removed
 end
 
 --[[
@@ -986,101 +986,101 @@ Computational shortcuts:
   - The baseline tour length is cached per pass, not recomputed per candidate.
 ]]
 local function reinsert(order, wps, zones, taboos)
-    local n = #order
-    if n < 4 then return order, wps, false end
+	local n = #order
+	if n < 4 then return order, wps, false end
 
-    -- Reverse-lookup: orderR[zoneIdx] = current position in order[].
-    -- Mirrors TSP's pathR used in the 2.5-opt branch.
-    local orderR = {}
-    for pos = 1, n do
-        orderR[order[pos]] = pos
-    end
+	-- Reverse-lookup: orderR[zoneIdx] = current position in order[].
+	-- Mirrors TSP's pathR used in the 2.5-opt branch.
+	local orderR = {}
+	for pos = 1, n do
+		orderR[order[pos]] = pos
+	end
 
-    -- Neighbor-prune list: reuses buildPruneList from twoOpt_optimized.lua.
-    local prune = buildPruneList(zones)
+	-- Neighbor-prune list: reuses buildPruneList from twoOpt_optimized.lua.
+	local prune = buildPruneList(zones)
 
-    -- Cache baseline tour length — computed once per pass, not per candidate.
-    local bestLen     = wpsTourLen(wps, taboos)
+	-- Cache baseline tour length — computed once per pass, not per candidate.
+	local bestLen     = wpsTourLen(wps, taboos)
 
-    -- Outer loop: repeat passes until no improvement found in a full pass.
-    local passImproved = true
+	-- Outer loop: repeat passes until no improvement found in a full pass.
+	local passImproved = true
 	local passCount = 0
-    while passImproved do
+	while passImproved do
 		passCount = passCount + 1
-        passImproved = false
+		passImproved = false
 
-        -- Track the single best move found across the whole pass.
-        local bestDelta    = -0.5   -- minimum improvement threshold (yards)
-        local bestNewOrder = nil
-        local bestNewWps   = nil
-        local bestNewLen   = nil
+		-- Track the single best move found across the whole pass.
+		local bestDelta    = -0.5   -- minimum improvement threshold (yards)
+		local bestNewOrder = nil
+		local bestNewWps   = nil
+		local bestNewLen   = nil
 
-        -- Or-k for segment lengths 1, 2, 3.
-        for segLen = 1, 3 do
-            if n < segLen + 2 then break end
+		-- Or-k for segment lengths 1, 2, 3.
+		for segLen = 1, 3 do
+			if n < segLen + 2 then break end
 
-            for i = 1, n do
-                local segEnd = i + segLen - 1
-                if segEnd > n then break end  -- no wrap-around segments
+			for i = 1, n do
+				local segEnd = i + segLen - 1
+				if segEnd > n then break end  -- no wrap-around segments
 
-                local zi = order[i]
+				local zi = order[i]
 
-                -- Inner loop over pruned neighbors of the segment head,
-                -- exactly like TSP's `for m = 1, #prune[a]` in 2.5-opt.
-                for _, zj in ipairs(prune[zi]) do
-                    local j = orderR[zj]
+				-- Inner loop over pruned neighbors of the segment head,
+				-- exactly like TSP's `for m = 1, #prune[a]` in 2.5-opt.
+				for _, zj in ipairs(prune[zi]) do
+					local j = orderR[zj]
 
-                    -- Validity guards:
-                    --   j must exist (nil guard for zones not in order)
-                    --   j must not overlap [i-1 .. segEnd] (no adjacent/overlap)
-                    --   skip trivial no-op wrap (i=1, j=n)
-                    if j and
-                       (j < i - 1 or j > segEnd) and
-                       not (j == n and i == 1) then
+					-- Validity guards:
+					--   j must exist (nil guard for zones not in order)
+					--   j must not overlap [i-1 .. segEnd] (no adjacent/overlap)
+					--   skip trivial no-op wrap (i=1, j=n)
+					if j and
+					   (j < i - 1 or j > segEnd) and
+					   not (j == n and i == 1) then
 
-                        -- Cheap rep-point pre-filter before paying for
-                        -- optimizeWaypoints / wpsTourLen.
-                        local delta = orKDelta(order, zones, i, segLen, j)
-                        if delta < bestDelta then
-                            local candOrder = applyReinsertion(order, i, segLen, j)
-                            local candWps   = optimizeWaypoints(candOrder, zones, 4)
-                            local candLen   = wpsTourLen(candWps, taboos)
+						-- Cheap rep-point pre-filter before paying for
+						-- optimizeWaypoints / wpsTourLen.
+						local delta = orKDelta(order, zones, i, segLen, j)
+						if delta < bestDelta then
+							local candOrder = applyReinsertion(order, i, segLen, j)
+							local candWps   = optimizeWaypoints(candOrder, zones, 4)
+							local candLen   = wpsTourLen(candWps, taboos)
 
-                            if candLen < bestLen + bestDelta then
-                                bestDelta    = candLen - bestLen
-                                bestNewOrder = candOrder
-                                bestNewWps   = candWps
-                                bestNewLen   = candLen
-                            end
-                        end
-                    end
-                end
+							if candLen < bestLen + bestDelta then
+								bestDelta    = candLen - bestLen
+								bestNewOrder = candOrder
+								bestNewWps   = candWps
+								bestNewLen   = candLen
+							end
+						end
+					end
+				end
 
 				if i % 5 == 0 then
-            		setStatus(4, passCount, ((segLen-1)*n+i)/(3*n))
+					setStatus(4, passCount, ((segLen-1)*n+i)/(3*n))
 				end
-            end
-        end
+			end
+		end
 
-        -- Apply the best move found in this pass.
-        if bestNewOrder then
-            order        = bestNewOrder
-            wps          = bestNewWps
-            bestLen      = bestNewLen
-            passImproved = true
+		-- Apply the best move found in this pass.
+		if bestNewOrder then
+			order        = bestNewOrder
+			wps          = bestNewWps
+			bestLen      = bestNewLen
+			passImproved = true
 
-            -- Rebuild reverse-lookup to reflect the new order.
-            for pos = 1, n do
-                orderR[order[pos]] = pos
-            end
+			-- Rebuild reverse-lookup to reflect the new order.
+			for pos = 1, n do
+				orderR[order[pos]] = pos
+			end
 
 			setStatus(4, passCount, 1, bestLen)
 
-            dbgPrintFormat("[CETSP] VNS reinsert: new len %.2f (delta %.2f)", bestLen, bestDelta)
-        end
-    end
+			dbgPrintFormat("[CETSP] VNS reinsert: new len %.2f (delta %.2f)", bestLen, bestDelta)
+		end
+	end
 
-    return order, wps, passCount
+	return order, wps, passCount
 end
 
 -----------------------------------
