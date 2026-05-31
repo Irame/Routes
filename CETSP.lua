@@ -1084,6 +1084,89 @@ local function reinsert(order, wps, zones, taboos)
 	return order, wps, passCount
 end
 
+--[[
+Uncrossing pass for CETSP.
+
+After reinsert relocates segments, waypoints can cross even when rep-points
+don't — so the prune-list delta filter in twoOpt misses them. This pass
+scans all pairs of non-adjacent edges using the *actual waypoint positions*
+(not rep-points), applies the 2-opt reversal immediately on any geometric
+intersection, and iterates until no crossings remain.
+
+Cost: O(n²) per iteration, but crossings are rare after 2-opt+reinsert, so
+the outer loop exits in very few passes. There is no prune-list here by
+design — the prune list is exactly what allowed crossings to slip through.
+]]
+local function uncross(order, wps, zones, taboos)
+	local n = #order
+	if n < 4 then return order, wps, 0 end
+
+	local bestLen = wpsTourLen(wps, taboos)
+	local improved = true
+	local iters    = 0
+
+	while improved and iters < 20 do
+		improved = false
+		iters    = iters + 1
+
+		for i = 1, n - 1 do
+			local i2   = i + 1
+			local ax   = wps[i].x;  local ay = wps[i].y
+			local bx   = wps[i2].x; local by = wps[i2].y
+
+			-- When i == 1 the wrap-around edge (n → 1) is adjacent,
+			-- so cap j at n-1 to avoid a false positive.
+			local jEnd = (i == 1) and (n - 1) or n
+
+			for j = i + 2, jEnd do
+				-- j2 wraps to 1 only when j == n and i != 1 (guarded above).
+				local j2 = (j == n) and 1 or (j + 1)
+				local cx = wps[j].x;  local cy = wps[j].y
+				local dx = wps[j2].x; local dy = wps[j2].y
+
+				if segmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy) then
+					-- Reverse order[i+1 .. j] in-place (standard 2-opt).
+					-- wps is NOT touched here; optimizeWaypoints recomputes
+					-- it from scratch based on order[], so the intermediate
+					-- state doesn't matter.
+					local left, right = i2, j
+					while left < right do
+						order[left], order[right] = order[right], order[left]
+						left  = left  + 1
+						right = right - 1
+					end
+
+					local newWps = optimizeWaypoints(order, zones, 4)
+					local newLen = wpsTourLen(newWps, taboos)
+
+					if newLen < bestLen - 0.1 then
+						-- Accept: a real geometric crossing almost always
+						-- improves; the small threshold guards rounding edge-cases.
+						wps      = newWps
+						bestLen  = newLen
+						improved = true
+						-- Refresh edge i so subsequent j's in this inner loop
+						-- use the updated waypoint, mirroring twoOpt's approach.
+						bx, by = wps[i2].x, wps[i2].y
+					else
+						-- Reject: undo the reversal. wps is unchanged.
+						left, right = i2, j
+						while left < right do
+							order[left], order[right] = order[right], order[left]
+							left  = left  + 1
+							right = right - 1
+						end
+					end
+				end
+			end
+
+			setStatus(5, iters, i / (n - 1), bestLen)
+		end
+	end
+
+	return order, wps, iters
+end
+
 -----------------------------------
 -- CETSP:SolveCETSP(nodes, radius, taboos, zoneID, parameters, path, nonblocking)
 -- Arguments
@@ -1192,6 +1275,15 @@ function CETSP:SolveCETSP(nodes, metadata, radius, taboos, zoneID, parameters, p
 	yield()
 	order, wps, passCount = reinsert(order, wps, steinerZones, cetspTaboos)
 	stageIters[4] = passCount
+
+	-- Stage 5: Uncrossing pass
+	-- Resolves crossings that reinsert introduces when moving segments across
+	-- the tour. Uses actual waypoint geometry, not rep-point heuristics.
+	yield()
+	order, wps, passCount = uncross(order, wps, steinerZones, cetspTaboos)
+	stageIters[5] = passCount
+	dbgPrintFormat("[CETSP] Uncross: %d iters, len=%.2f", passCount, wpsTourLen(wps, cetspTaboos))
+
 
 	-- Stage 5: Final optimization
 	wps = optimizeWaypoints(order, steinerZones, parameters.maxPasses or 10)
