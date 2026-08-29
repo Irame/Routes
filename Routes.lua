@@ -2571,6 +2571,7 @@ do
 						order = 150,
 						name = L["Extra optimization"],
 						inline = true,
+						hidden = "IsCETSPSelected",
 						args = {
 							two_point_five_opt_disc = {
 								name = L["ExtraOptDesc"], type = "description",
