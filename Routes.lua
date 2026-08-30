@@ -729,6 +729,8 @@ function Routes:DrawMinimapLines(forceUpdate)
 
 	for route_name, route_data in pairs( db.routes[ currentZoneID ] ) do
 		if type(route_data) == "table" and type(route_data.route) == "table" and #route_data.route > 1 then
+			local algorithm = route_data.opt_algorithm or "TSP"
+
 			-- store color/width
 			local width = (route_data.width_minimap or defaults.width_minimap) / (minimapScale)
 			local color = route_data.color or defaults.color
@@ -813,10 +815,10 @@ function Routes:DrawMinimapLines(forceUpdate)
 								local shorten1, shorten2
 								if last_inside then shorten1 = true else shorten1 = false end
 								if cur_inside then shorten2 = true else shorten2 = false end
-								if shorten2 and route_data.metadata and defaults.line_gaps_skip_cluster and #route_data.metadata[i] > 1 then
+								if shorten2 and route_data.metadata and defaults.line_gaps_skip_cluster and (#route_data.metadata[i] > 1 or algorithm == "CETSP") then
 									shorten2 = false
 								end
-								if shorten1 and route_data.metadata and defaults.line_gaps_skip_cluster and #route_data.metadata[(i-1 == 0) and #route_data.route or i-1] > 1 then
+								if shorten1 and route_data.metadata and defaults.line_gaps_skip_cluster and (#route_data.metadata[(i-1 == 0) and #route_data.route or i-1] > 1 or algorithm == "CETSP") then
 									shorten1 = false
 								end
 								if shorten1 and shorten2 and l > (gapConst*2) then -- draw if line is 10 or more pixels (scaled)
