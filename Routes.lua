@@ -2123,6 +2123,29 @@ function ConfigHandler:IsNotCETSPSelected(info)
 	return not self:IsCETSPSelected(info)
 end
 
+local function BuildResultMessage(numNodes, length, iter, timetaken)
+	if type(iter) == "number" then
+		return L["Path with %d nodes found with length %.2f yards after %d iterations in %.2f seconds."]:format(numNodes, length, iter, timetaken)
+	elseif type(iter) == "table" then
+		local stageIterStr = ""
+		for i = 1, 5 do
+			if iter[i] then
+				if stageIterStr ~= "" then
+					stageIterStr = stageIterStr .. ", "
+				end
+				stageIterStr = stageIterStr .. ("S%d: %d"):format(i, iter[i])
+			end
+		end
+
+		local msg = L["Path with %d nodes found with length %.2f yards in %.2f seconds."]:format(numNodes, length, timetaken)
+		if stageIterStr ~= "" then
+			msg = msg .. (" (%s)"):format(stageIterStr);
+		end
+
+		return msg
+	end
+end
+
 function ConfigHandler:DoForeground(info)
 	local zone = tonumber(info[2])
 	local route = Routes.routekeys[zone][ info[3] ]
@@ -2154,7 +2177,7 @@ function ConfigHandler:DoForeground(info)
 	t.route = output
 	t.length = length
 	t.metadata = meta
-	Routes:Print(L["Path with %d nodes found with length %.2f yards after %d iterations in %.2f seconds."]:format(#output, length, iter, timetaken))
+	Routes:Print(BuildResultMessage(#output, length, iter, timetaken))
 
 	-- redraw lines
 	local AutoShow = Routes:GetModule("AutoShow", true)
@@ -2215,8 +2238,9 @@ function ConfigHandler:DoBackgroundTSP(zone, route, taboos)
 			t.route = output
 			t.length = length
 			t.metadata = meta
-			local msg = L["Path with %d nodes found with length %.2f yards after %d iterations in %.2f seconds."]:format(#output, length, iter, timetaken)
-			Routes:Print(msg)
+
+			Routes:Print(BuildResultMessage(#output, length, iter, timetaken))
+
 			local frame = LibStub("AceConfigDialog-3.0").OpenFrames["Routes"]
 			if frame then
 				frame:SetStatusText(msg)
@@ -2270,21 +2294,8 @@ function ConfigHandler:DoBackgroundCETSP(zone, route, taboos)
 			t.length = length
 			t.metadata = meta
 
-			local stageIterStr = ""
-			for i = 1, 5 do
-				if stageIter[i] then
-					if stageIterStr ~= "" then
-						stageIterStr = stageIterStr .. ", "
-					end
-					stageIterStr = stageIterStr .. ("S%d: %d"):format(i, iter)
-				end
-			end
+			Routes:Print(BuildResultMessage(#output, length, stageIter, timetaken))
 
-			local msg = L["Path with %d nodes found with length %.2f yards in %.2f seconds."]:format(#output, length, timetaken)
-			if stageIterStr ~= "" then
-				msg = msg .. (" (%s)"):format(stageIterStr);
-			end
-			Routes:Print(msg)
 			local frame = LibStub("AceConfigDialog-3.0").OpenFrames["Routes"]
 			if frame then
 				frame:SetStatusText(msg)

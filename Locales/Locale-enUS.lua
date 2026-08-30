@@ -11,6 +11,8 @@ L["routes"] = true -- slash command
 L["Options"] = true
 L["Update distance"] = true
 L["Yards to move before triggering a minimap update"] = true
+L["Draw Cluster Lines"] = true
+L["Draw lines from the cluster center to each node in the cluster."] = true
 
 -- Map drawing
 L["Map Drawing"] = true
