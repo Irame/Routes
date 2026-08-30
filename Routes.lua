@@ -404,193 +404,193 @@ setmetatable( X_cache, XY_cache_mt )
 setmetatable( Y_cache, XY_cache_mt )
 
 function Routes:ClampLine(last_x, last_y, cur_x, cur_y, cx, cy, radius)
-    local last_inside = is_inside(last_x, last_y, cx, cy, radius)
-    local cur_inside  = is_inside(cur_x, cur_y, cx, cy, radius)
-    local div_by_zero_nudge = 0.000001
-    local radius2 = radius * radius
+	local last_inside = is_inside(last_x, last_y, cx, cy, radius)
+	local cur_inside  = is_inside(cur_x, cur_y, cx, cy, radius)
+	local div_by_zero_nudge = 0.000001
+	local radius2 = radius * radius
 
-    local draw_sx, draw_sy, draw_ex, draw_ey
+	local draw_sx, draw_sy, draw_ex, draw_ey
 
-    -- both inside – trivial case
-    if cur_inside and last_inside then
-        return last_x, last_y, cur_x, cur_y
-    end
+	-- both inside – trivial case
+	if cur_inside and last_inside then
+		return last_x, last_y, cur_x, cur_y
+	end
 
-    -- direction of the line
-    local dx = last_x - cur_x
-    local dy = last_y - cur_y
+	-- direction of the line
+	local dx = last_x - cur_x
+	local dy = last_y - cur_y
 
-    -- perpendicular point
-    local zx = cx - dy
-    local zy = cy + dx
+	-- perpendicular point
+	local zx = cx - dy
+	local zy = cy + dx
 
-    if dx == 0 then dx = div_by_zero_nudge end
-    if dy == 0 then dy = div_by_zero_nudge end
+	if dx == 0 then dx = div_by_zero_nudge end
+	if dy == 0 then dy = div_by_zero_nudge end
 
-    local nd = ((cx - last_x) * (cy - zy) - (cx - zx) * (cy - last_y)) /
-               ((cur_x - last_x) * (cy - zy) - (cx - zx) * (cur_y - last_y))
+	local nd = ((cx - last_x) * (cy - zy) - (cx - zx) * (cy - last_y)) /
+	           ((cur_x - last_x) * (cy - zy) - (cx - zx) * (cur_y - last_y))
 
-    local px = last_x + nd * -dx
-    local py = last_y + nd * -dy
+	local px = last_x + nd * -dx
+	local py = last_y + nd * -dy
 
-    local dpc_x = cx - px
-    local dpc_y = cy - py
-    local lenpc = dpc_x * dpc_x + dpc_y * dpc_y
+	local dpc_x = cx - px
+	local dpc_y = cy - py
+	local lenpc = dpc_x * dpc_x + dpc_y * dpc_y
 
-    if lenpc >= 2 * radius2 then
-        return nil
-    end
+	if lenpc >= 2 * radius2 then
+		return nil
+	end
 
-    -- --- Clamp the end point ---
-    if cur_inside then
-        draw_ex = cur_x
-        draw_ey = cur_y
-    else
-        if math_abs(cur_x - cx) < radius and math_abs(cur_y - cy) < radius then
-            draw_ex = cur_x
-            draw_ey = cur_y
-        else
-            local minimap_cur_x = cx + radius * (dx < 0 and 1 or -1)
-            local minimap_cur_y = cy + radius * (dy < 0 and 1 or -1)
+	-- --- Clamp the end point ---
+	if cur_inside then
+		draw_ex = cur_x
+		draw_ey = cur_y
+	else
+		if math_abs(cur_x - cx) < radius and math_abs(cur_y - cy) < radius then
+			draw_ex = cur_x
+			draw_ey = cur_y
+		else
+			local minimap_cur_x = cx + radius * (dx < 0 and 1 or -1)
+			local minimap_cur_y = cy + radius * (dy < 0 and 1 or -1)
 
-            local delta_cur_x = (minimap_cur_x - cur_x) / -dx
-            local delta_cur_y = (minimap_cur_y - cur_y) / -dy
+			local delta_cur_x = (minimap_cur_x - cur_x) / -dx
+			local delta_cur_y = (minimap_cur_y - cur_y) / -dy
 
-            if delta_cur_x < delta_cur_y and delta_cur_x < 0 then
-                draw_ex = minimap_cur_x
-                draw_ey = cur_y + -dy * delta_cur_x
-            else
-                draw_ex = cur_x + -dx * delta_cur_y
-                draw_ey = minimap_cur_y
-            end
+			if delta_cur_x < delta_cur_y and delta_cur_x < 0 then
+				draw_ex = minimap_cur_x
+				draw_ey = cur_y + -dy * delta_cur_x
+			else
+				draw_ex = cur_x + -dx * delta_cur_y
+				draw_ey = minimap_cur_y
+			end
 
-            if math_abs(draw_ex - cx) > radius * 1.01 or
-               math_abs(draw_ey - cy) > radius * 1.01 then
-                draw_ex, draw_ey = nil, nil
-            end
-        end
+			if math_abs(draw_ex - cx) > radius * 1.01 or
+			   math_abs(draw_ey - cy) > radius * 1.01 then
+				draw_ex, draw_ey = nil, nil
+			end
+		end
 
-        if draw_ex and draw_ey and is_round(draw_ex - cx, draw_ey - cy) then
-            if lenpc < radius2 then
-                local dcx = cx - cur_x
-                local dcy = cy - cur_y
-                local len_dc = dcx * dcx + dcy * dcy
-                local len_d = dx * dx + dy * dy
-                local len_ddc = dx * dcx + dy * dcy
-                local d_sqrt = (len_ddc * len_ddc - len_d * (len_dc - radius2)) ^ 0.5
+		if draw_ex and draw_ey and is_round(draw_ex - cx, draw_ey - cy) then
+			if lenpc < radius2 then
+				local dcx = cx - cur_x
+				local dcy = cy - cur_y
+				local len_dc = dcx * dcx + dcy * dcy
+				local len_d = dx * dx + dy * dy
+				local len_ddc = dx * dcx + dy * dcy
+				local d_sqrt = (len_ddc * len_ddc - len_d * (len_dc - radius2)) ^ 0.5
 
-                draw_ex = cur_x - dx * (-len_ddc + d_sqrt) / len_d
-                draw_ey = cur_y - dy * (-len_ddc + d_sqrt) / len_d
+				draw_ex = cur_x - dx * (-len_ddc + d_sqrt) / len_d
+				draw_ey = cur_y - dy * (-len_ddc + d_sqrt) / len_d
 
-                if (draw_ex - px) / math_abs(draw_ex - px) ~= (cur_x - px) / math_abs(cur_x - px) or
-                   (draw_ey - py) / math_abs(draw_ey - py) ~= (cur_y - py) / math_abs(cur_y - py) then
-                    draw_ex, draw_ey = nil, nil
-                end
-            else
-                draw_ex, draw_ey = nil, nil
-            end
-        end
-    end
+				if (draw_ex - px) / math_abs(draw_ex - px) ~= (cur_x - px) / math_abs(cur_x - px) or
+				   (draw_ey - py) / math_abs(draw_ey - py) ~= (cur_y - py) / math_abs(cur_y - py) then
+					draw_ex, draw_ey = nil, nil
+				end
+			else
+				draw_ex, draw_ey = nil, nil
+			end
+		end
+	end
 
-    -- --- Clamp the start point ---
-    if last_inside then
-        draw_sx = last_x
-        draw_sy = last_y
-    else
-        if math_abs(last_x - cx) < radius and math_abs(last_y - cy) < radius then
-            draw_sx = last_x
-            draw_sy = last_y
-        else
-            local minimap_last_x = cx + radius * (dx > 0 and 1 or -1)
-            local minimap_last_y = cy + radius * (dy > 0 and 1 or -1)
+	-- --- Clamp the start point ---
+	if last_inside then
+		draw_sx = last_x
+		draw_sy = last_y
+	else
+		if math_abs(last_x - cx) < radius and math_abs(last_y - cy) < radius then
+			draw_sx = last_x
+			draw_sy = last_y
+		else
+			local minimap_last_x = cx + radius * (dx > 0 and 1 or -1)
+			local minimap_last_y = cy + radius * (dy > 0 and 1 or -1)
 
-            local delta_last_x = (minimap_last_x - last_x) / dx
-            local delta_last_y = (minimap_last_y - last_y) / dy
+			local delta_last_x = (minimap_last_x - last_x) / dx
+			local delta_last_y = (minimap_last_y - last_y) / dy
 
-            if delta_last_x < delta_last_y and delta_last_x < 0 then
-                draw_sx = minimap_last_x
-                draw_sy = last_y + dy * delta_last_x
-            else
-                draw_sx = last_x + dx * delta_last_y
-                draw_sy = minimap_last_y
-            end
+			if delta_last_x < delta_last_y and delta_last_x < 0 then
+				draw_sx = minimap_last_x
+				draw_sy = last_y + dy * delta_last_x
+			else
+				draw_sx = last_x + dx * delta_last_y
+				draw_sy = minimap_last_y
+			end
 
-            if math_abs(draw_sx - cx) > radius * 1.01 or
-               math_abs(draw_sy - cy) > radius * 1.01 then
-                draw_sx, draw_sy = nil, nil
-            end
-        end
+			if math_abs(draw_sx - cx) > radius * 1.01 or
+			   math_abs(draw_sy - cy) > radius * 1.01 then
+				draw_sx, draw_sy = nil, nil
+			end
+		end
 
-        if draw_sx and draw_sy and is_round(draw_sx - cx, draw_sy - cy) then
-            if lenpc < radius2 then
-                local dcx = cx - cur_x
-                local dcy = cy - cur_y
-                local len_dc = dcx * dcx + dcy * dcy
-                local len_d = dx * dx + dy * dy
-                local len_ddc = dx * dcx + dy * dcy
-                local d_sqrt = (len_ddc * len_ddc - len_d * (len_dc - radius2)) ^ 0.5
+		if draw_sx and draw_sy and is_round(draw_sx - cx, draw_sy - cy) then
+			if lenpc < radius2 then
+				local dcx = cx - cur_x
+				local dcy = cy - cur_y
+				local len_dc = dcx * dcx + dcy * dcy
+				local len_d = dx * dx + dy * dy
+				local len_ddc = dx * dcx + dy * dcy
+				local d_sqrt = (len_ddc * len_ddc - len_d * (len_dc - radius2)) ^ 0.5
 
-                draw_sx = cur_x - dx * (-len_ddc - d_sqrt) / len_d
-                draw_sy = cur_y - dy * (-len_ddc - d_sqrt) / len_d
+				draw_sx = cur_x - dx * (-len_ddc - d_sqrt) / len_d
+				draw_sy = cur_y - dy * (-len_ddc - d_sqrt) / len_d
 
-                if (draw_sx - px) / math_abs(draw_sx - px) ~= (last_x - px) / math_abs(last_x - px) or
-                   (draw_sy - py) / math_abs(draw_sy - py) ~= (last_y - py) / math_abs(last_y - py) then
-                    draw_sx, draw_sy = nil, nil
-                end
-            else
-                draw_sx, draw_sy = nil, nil
-            end
-        end
-    end
+				if (draw_sx - px) / math_abs(draw_sx - px) ~= (last_x - px) / math_abs(last_x - px) or
+				   (draw_sy - py) / math_abs(draw_sy - py) ~= (last_y - py) / math_abs(last_y - py) then
+					draw_sx, draw_sy = nil, nil
+				end
+			else
+				draw_sx, draw_sy = nil, nil
+			end
+		end
+	end
 
-    if draw_sx and draw_sy and draw_ex and draw_ey then
-        return draw_sx, draw_sy, draw_ex, draw_ey
-    end
-    return nil
+	if draw_sx and draw_sy and draw_ex and draw_ey then
+		return draw_sx, draw_sy, draw_ex, draw_ey
+	end
+	return nil
 end
 
 function Routes:DrawClustering(frame, route_data, getXY, width, color, minimapInfo)
-    if not db.defaults.draw_cluster_lines then return end
-    if not route_data.metadata then return end
+	if not db.defaults.draw_cluster_lines then return end
+	if not route_data.metadata then return end
 
-    local defaults = db.defaults
-    local zone_color = {
-        color[1],
-        color[2],
-        color[3],
-        (color[4] or 1) * 0.4,
-    }
-    local zone_width = width * 0.5
+	local defaults = db.defaults
+	local zone_color = {
+		color[1],
+		color[2],
+		color[3],
+		(color[4] or 1) * 0.4,
+	}
+	local zone_width = width * 0.5
 
-    local isMinimap = minimapInfo and true or false
+	local isMinimap = minimapInfo and true or false
 
-    for cluster_idx = 1, #route_data.metadata do
-        local rep_point = route_data.route[cluster_idx]
-        if rep_point and rep_point ~= defaults.fake_point then
-            local rep_sx, rep_sy, rep_visible
-            if isMinimap then
-                -- world coordinates (unrotated)
-                local key = format("%s;%s", minimapInfo.zoneID, rep_point)
-                rep_sx, rep_sy = X_cache[key], Y_cache[key]
-                rep_visible = true
-            else
-                rep_sx, rep_sy, rep_visible = getXY(rep_point)
-            end
+	for cluster_idx = 1, #route_data.metadata do
+		local rep_point = route_data.route[cluster_idx]
+		if rep_point and rep_point ~= defaults.fake_point then
+			local rep_sx, rep_sy, rep_visible
+			if isMinimap then
+				-- world coordinates (unrotated)
+				local key = format("%s;%s", minimapInfo.zoneID, rep_point)
+				rep_sx, rep_sy = X_cache[key], Y_cache[key]
+				rep_visible = true
+			else
+				rep_sx, rep_sy, rep_visible = getXY(rep_point)
+			end
 
-            local cluster = route_data.metadata[cluster_idx]
-            for node_idx = 1, #cluster do
-                local node_point = cluster[node_idx]
-                if node_point and node_point ~= defaults.fake_point then
-                    local node_sx, node_sy, node_visible
-                    if isMinimap then
-                        local key = format("%s;%s", minimapInfo.zoneID, node_point)
-                        node_sx, node_sy = X_cache[key], Y_cache[key]
-                        node_visible = true
-                    else
-                        node_sx, node_sy, node_visible = getXY(node_point)
-                    end
+			local cluster = route_data.metadata[cluster_idx]
+			for node_idx = 1, #cluster do
+				local node_point = cluster[node_idx]
+				if node_point and node_point ~= defaults.fake_point then
+					local node_sx, node_sy, node_visible
+					if isMinimap then
+						local key = format("%s;%s", minimapInfo.zoneID, node_point)
+						node_sx, node_sy = X_cache[key], Y_cache[key]
+						node_visible = true
+					else
+						node_sx, node_sy, node_visible = getXY(node_point)
+					end
 
-                    if isMinimap then
+					if isMinimap then
 						if node_sx and node_sy and rep_sx and rep_sy and not (
 							( node_sx < minimapInfo.minX and rep_sx < minimapInfo.minX ) or
 							( node_sx > minimapInfo.maxX and rep_sx > minimapInfo.maxX ) or
@@ -623,17 +623,17 @@ function Routes:DrawClustering(frame, route_data, getXY, width, color, minimapIn
 										zone_width, zone_color, "ARTWORK")
 							end
 						end
-                    else
-                        -- Original behaviour for world map (no clipping)
-                        if node_visible or rep_visible then
-                            G:DrawLine(frame, rep_sx, rep_sy, node_sx, node_sy,
-                                       zone_width, zone_color, "ARTWORK")
-                        end
-                    end
-                end
-            end
-        end
-    end
+					else
+						-- Original behaviour for world map (no clipping)
+						if node_visible or rep_visible then
+							G:DrawLine(frame, rep_sx, rep_sy, node_sx, node_sy,
+							           zone_width, zone_color, "ARTWORK")
+						end
+					end
+				end
+			end
+		end
+	end
 end
 
 function Routes:DrawMinimapLines(forceUpdate)
