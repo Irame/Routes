@@ -131,7 +131,6 @@ local defaults = {
 			},
 			cetsp = {
 				maxPasses = 10,
-				maxVNS = 20,
 			},
 			prof_options = {
 				['*'] = "Always",
@@ -635,32 +634,6 @@ function Routes:DrawClustering(frame, route_data, getXY, width, color, minimapIn
             end
         end
     end
-end
-
-function Routes:DrawCETSPZonesMinimap(route_data, currentZoneID, cx, cy, minX, minY,
-									  scale_x, scale_y, minimap_h, minimap_rotate,
-									  cos, sin, radius, minimapScale)
-	local defaults = db.defaults
-	local vis_radius = radius * 1.5
-
-	local function getXY(point)
-		local key = format("%s;%s", currentZoneID, point)
-		local wx, wy = X_cache[key], Y_cache[key]
-		if minimap_rotate then
-			local dx, dy = wx - cx, wy - cy
-			wx = cx + dx * cos - dy * sin
-			wy = cy + dx * sin + dy * cos
-		end
-		local sx = (wx - minX) * scale_x
-		local sy = minimap_h - (wy - minY) * scale_y
-		return sx, sy, is_inside(wx, wy, cx, cy, vis_radius)
-	end
-
-	Routes:DrawClustering(
-		Minimap, route_data,
-		getXY,
-		(route_data.width_minimap or db.defaults.width_minimap) / minimapScale,
-		route_data.color or db.defaults.color)
 end
 
 function Routes:DrawMinimapLines(forceUpdate)

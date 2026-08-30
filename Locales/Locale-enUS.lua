@@ -183,7 +183,6 @@ L["Stage %d - Pass %d: %d%%"] = true
 L["Path with %d nodes found with length %.2f yards in %.2f seconds."] = true
 L["The following error occured in the background path generation coroutine, please report to Grum or Xinhuan:"] = true
 L["TOO_MANY_NODES_ERROR"] = "This route has more than 724 nodes. Please reduce it by removing some nodes or by clustering otherwise memory allocation errors will occur."
-L["CETSP background optimization not yet implemented. Please use foreground."] = true
 L["Pass %d: %d%% - %d yards"] = true
 L["Pass %d: %d%%"] = true
 
